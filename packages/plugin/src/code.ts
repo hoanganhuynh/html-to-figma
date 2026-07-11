@@ -17,6 +17,7 @@ interface Fill { type: 'SOLID' | 'IMAGE' | 'GRADIENT'; color?: Color; url?: stri
 interface Stroke { side: string; width: number; color: Color }
 interface Shadow { type: 'dropShadow' | 'innerShadow'; x: number; y: number; blur: number; spread: number; color: Color; visible: boolean }
 interface BorderRadius { tl: number; tr: number; br: number; bl: number }
+interface Padding { top: number; right: number; bottom: number; left: number }
 interface TextInfo {
   content: string; fontSize: number; fontFamily: string;
   fontWeight: string; fontStyle: string;
@@ -33,6 +34,7 @@ interface Layer {
   opacity: number;
   overflow: boolean;
   borderRadius: BorderRadius;
+  padding: Padding;
   fills: Fill[];
   strokes: Stroke[];
   effects: Shadow[];
@@ -109,7 +111,6 @@ function applyBorderRadius(node: FrameNode, br: BorderRadius) {
 
 // ─── Font loading ─────────────────────────────────────────────────────────────
 
-// Map CSS font-weight + font-style to Figma font style names
 function figmaFontStyle(weight: string, italic: boolean): string {
   const w = parseInt(weight) || 400;
   if (italic) {
@@ -142,27 +143,42 @@ async function loadFontSafe(family: string, weight: string, italic: boolean): Pr
   const style = figmaFontStyle(weight, italic);
   const w = parseInt(weight) || 400;
 
-  // Build weight-descending fallback styles so heavy weights try Black → ExtraBold → Bold
+  // Weight-ordered style fallbacks within the same family
   const weightStyles: string[] = [];
   if (!italic) {
-    if (w >= 900) weightStyles.push('Black', 'ExtraBold', 'Bold');
-    else if (w >= 800) weightStyles.push('ExtraBold', 'Black', 'Bold');
-    else if (w >= 700) weightStyles.push('Bold', 'SemiBold');
-    else if (w >= 600) weightStyles.push('SemiBold', 'Medium', 'Bold');
+    if (w >= 900) weightStyles.push('Black', 'ExtraBold', 'Bold', 'Regular');
+    else if (w >= 800) weightStyles.push('ExtraBold', 'Black', 'Bold', 'Regular');
+    else if (w >= 700) weightStyles.push('Bold', 'SemiBold', 'Regular');
+    else if (w >= 600) weightStyles.push('SemiBold', 'Medium', 'Bold', 'Regular');
     else if (w >= 500) weightStyles.push('Medium', 'SemiBold', 'Regular');
     else if (w <= 200) weightStyles.push('ExtraLight', 'Thin', 'Light', 'Regular');
     else if (w <= 300) weightStyles.push('Light', 'ExtraLight', 'Regular');
-    weightStyles.push('Regular');
+    else weightStyles.push('Regular');
   } else {
-    if (w >= 900) weightStyles.push('Black Italic', 'ExtraBold Italic', 'Bold Italic');
-    else if (w >= 800) weightStyles.push('ExtraBold Italic', 'Black Italic', 'Bold Italic');
-    else if (w >= 700) weightStyles.push('Bold Italic', 'SemiBold Italic');
-    weightStyles.push('Italic', 'Regular');
+    if (w >= 900) weightStyles.push('Black Italic', 'ExtraBold Italic', 'Bold Italic', 'Italic');
+    else if (w >= 800) weightStyles.push('ExtraBold Italic', 'Black Italic', 'Bold Italic', 'Italic');
+    else if (w >= 700) weightStyles.push('Bold Italic', 'SemiBold Italic', 'Italic');
+    else weightStyles.push('Italic', 'Regular');
+  }
+
+  // Google Fonts sometimes ships heavy weights as a SEPARATE family, e.g. "Archivo Black"
+  // with style "Regular" instead of "Archivo" with style "Black". Build those too.
+  const separateFamilyFallbacks: FontName[] = [];
+  if (w >= 900) {
+    separateFamilyFallbacks.push(
+      { family: `${family} Black`, style: italic ? 'Italic' : 'Regular' },
+    );
+  }
+  if (w >= 800) {
+    separateFamilyFallbacks.push(
+      { family: `${family} ExtraBold`, style: italic ? 'Italic' : 'Regular' },
+    );
   }
 
   const fallbacks: FontName[] = [
     { family, style },
     ...weightStyles.filter(s => s !== style).map(s => ({ family, style: s })),
+    ...separateFamilyFallbacks,
     { family: 'Inter', style: italic ? 'Italic' : 'Regular' },
     { family: 'Inter', style: 'Regular' },
   ];
@@ -207,7 +223,7 @@ function applyTextTransform(content: string, transform: string): string {
 
 // ─── Build TEXT node ──────────────────────────────────────────────────────────
 
-async function buildText(layer: Layer): Promise<TextNode | null> {
+async function buildText(layer: Layer, images: Record<string, string>): Promise<SceneNode | null> {
   const t = layer.text!;
   if (!t.content) return null;
 
@@ -246,9 +262,45 @@ async function buildText(layer: Layer): Promise<TextNode | null> {
   // Lock width to match captured layout; let height grow with content
   node.textAutoResize = 'HEIGHT';
   node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
+  node.opacity = layer.opacity;
+
+  // If the element has a visual box (border, background, or border-radius), wrap
+  // the text in a FRAME so those properties are preserved. This handles badge/pill
+  // elements like <span class="tag">Label</span> that have border + border-radius.
+  const br = layer.borderRadius;
+  const hasBorderRadius = br.tl > 0 || br.tr > 0 || br.br > 0 || br.bl > 0;
+  const hasBackground = layer.fills.some(f => f.type === 'SOLID' || f.type === 'IMAGE');
+  const hasStroke = layer.strokes.length > 0;
+
+  if (hasBackground || hasStroke || hasBorderRadius) {
+    const frame = figma.createFrame();
+    frame.layoutMode = 'NONE';
+    frame.name = layer.name;
+    frame.x = layer.x;
+    frame.y = layer.y;
+    frame.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
+    frame.opacity = layer.opacity;
+    frame.clipsContent = layer.overflow;
+    frame.fills = [];
+    applyFills(frame, layer.fills, images);
+    applyStrokes(frame, layer.strokes);
+    applyEffects(frame, layer.effects);
+    applyBorderRadius(frame, layer.borderRadius);
+
+    // Position text using captured padding so it sits correctly inside the box
+    const pad = layer.padding ?? { top: 0, right: 0, bottom: 0, left: 0 };
+    const innerW = Math.max(layer.width - pad.left - pad.right, 1);
+    const innerH = Math.max(layer.height - pad.top - pad.bottom, 1);
+    node.textAutoResize = 'HEIGHT';
+    node.resize(innerW, innerH);
+    node.x = pad.left;
+    node.y = pad.top;
+    frame.appendChild(node);
+    return frame;
+  }
+
   node.x = layer.x;
   node.y = layer.y;
-  node.opacity = layer.opacity;
   return node;
 }
 
@@ -271,7 +323,6 @@ async function buildSvg(layer: Layer): Promise<FrameNode | null> {
 async function buildFrame(layer: Layer, images: Record<string, string>): Promise<FrameNode> {
   const node = figma.createFrame();
 
-  // Use semantic name: id, first class, or tag name
   node.name = layer.name || layer.tagName.toLowerCase();
 
   // IMPORTANT: Always use absolute positioning — never Auto Layout.
@@ -291,7 +342,6 @@ async function buildFrame(layer: Layer, images: Record<string, string>): Promise
   applyEffects(node, layer.effects);
   applyBorderRadius(node, layer.borderRadius);
 
-  // Build children recursively
   for (const child of layer.children) {
     const childNode = await buildLayer(child, images);
     if (childNode) {
@@ -309,7 +359,7 @@ async function buildFrame(layer: Layer, images: Record<string, string>): Promise
 
 async function buildLayer(layer: Layer, images: Record<string, string>): Promise<SceneNode | null> {
   if (layer.type === 'TEXT' || layer.type === 'INPUT') {
-    return buildText(layer);
+    return buildText(layer, images);
   }
   if (layer.type === 'SVG') {
     return buildSvg(layer);

@@ -11,12 +11,15 @@ export async function captureScript() {
     'TEMPLATE', 'IFRAME', 'BR', 'WBR', 'HR',
   ]);
 
-  // Inline elements: when ALL children are inline, treat parent as a single TEXT node
+  // Inline elements AND line-break elements — when ALL element children are in this
+  // set, treat the parent as a single TEXT node to preserve text continuity across
+  // mixed content like: "Hello <br> <span>world</span> foo".
   const INLINE_TAGS = new Set([
     'SPAN', 'A', 'EM', 'STRONG', 'B', 'I', 'U', 'S',
     'CODE', 'KBD', 'SAMP', 'VAR', 'CITE', 'DFN', 'ABBR',
     'SMALL', 'SUB', 'SUP', 'MARK', 'DEL', 'INS', 'TIME',
     'BDI', 'BDO',
+    'BR', 'WBR', // line-break elements are inline — must be included so <h1>text<br><span>…</span></h1> collapses to TEXT
   ]);
 
   // ─── Color helpers ───────────────────────────────────────────────────────────
@@ -109,29 +112,34 @@ export async function captureScript() {
 
   function isSvgEl(el) { return el instanceof SVGElement; }
 
-  /**
-   * Returns true if every child element is an inline-level element.
-   * If so, we treat the parent as a single TEXT node to preserve text continuity
-   * across mixed content like: "Hello <span>world</span> foo".
-   */
   function hasOnlyInlineChildren(el) {
     if (el.childElementCount === 0) return false;
     return [...el.children].every(c => INLINE_TAGS.has(c.tagName));
   }
 
-  function nodeType(el) {
+  function hasVisualBox(cs) {
+    const bgColor = cs.backgroundColor;
+    const hasBg = bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent';
+    const hasBorder = ['Top', 'Right', 'Bottom', 'Left'].some(s => parsePx(cs[`border${s}Width`]) > 0);
+    return hasBg || hasBorder;
+  }
+
+  function nodeType(el, cs) {
     if (isSvgEl(el)) return 'SVG';
     if (el.tagName === 'IMG') return 'IMAGE';
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return 'INPUT';
 
-    const hasText = el.textContent.trim().length > 0;
+    const raw = el.innerText !== undefined ? el.innerText : el.textContent;
+    const hasText = raw.trim().length > 0;
 
-    // Leaf element with text content → TEXT
+    // Leaf element with text → TEXT (buildText will wrap in frame if it has borders)
     if (el.childElementCount === 0 && hasText) return 'TEXT';
 
-    // Element whose children are ALL inline tags → treat whole block as TEXT
-    // This handles <h1>Foo <span>Bar</span></h1> — keeps full text together
-    if (hasOnlyInlineChildren(el) && hasText) return 'TEXT';
+    // Element whose children are all inline/line-break tags → collapse to a single TEXT
+    // node so we capture full innerText (e.g. <h1>Foo<br><span>Bar</span></h1>).
+    // BUT: if the element has its own visual box (border, background), keep it as FRAME
+    // so its styling is preserved — its inline children will be TEXT nodes inside.
+    if (hasOnlyInlineChildren(el) && hasText && !hasVisualBox(cs)) return 'TEXT';
 
     return 'FRAME';
   }
@@ -140,9 +148,8 @@ export async function captureScript() {
 
   function extractText(el, cs) {
     // Use innerText so <br> becomes \n and invisible text (display:none) is excluded.
-    // Fall back to textContent if innerText is unavailable.
     const raw = (el.innerText !== undefined ? el.innerText : el.textContent) || '';
-    const content = raw.replace(/\n{3,}/g, '\n\n').trim(); // collapse excess newlines
+    const content = raw.replace(/\n{3,}/g, '\n\n').trim();
 
     return {
       content,
@@ -171,7 +178,7 @@ export async function captureScript() {
     if (cs.display === 'none') return null;
     if (cs.visibility === 'hidden' && el.childElementCount === 0) return null;
 
-    const type = nodeType(el);
+    const type = nodeType(el, cs);
     const name = el.id
       ? `#${el.id}`
       : (typeof el.className === 'string' && el.className.trim())
@@ -192,6 +199,12 @@ export async function captureScript() {
       fills:   extractFills(el, cs),
       strokes: extractStrokes(cs),
       effects: parseBoxShadow(cs.boxShadow),
+      padding: {
+        top:    parsePx(cs.paddingTop),
+        right:  parsePx(cs.paddingRight),
+        bottom: parsePx(cs.paddingBottom),
+        left:   parsePx(cs.paddingLeft),
+      },
       children: [],
     };
 
@@ -232,6 +245,7 @@ export async function captureScript() {
     fills: [{ type: 'SOLID', color: bgColor }],
     strokes: [], effects: [],
     borderRadius: { tl: 0, tr: 0, br: 0, bl: 0 },
+    padding: { top: 0, right: 0, bottom: 0, left: 0 },
     opacity: 1, overflow: false, children: [],
   };
 
