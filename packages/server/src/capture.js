@@ -356,6 +356,19 @@ export async function captureScript() {
         ? el.className.trim().split(/\s+/)[0]
         : el.tagName.toLowerCase();
 
+    // Extract CSS flex layout for FRAME elements (display:flex → Figma auto-layout)
+    let flexLayout;
+    if (type === 'FRAME' && (cs.display === 'flex' || cs.display === 'inline-flex')) {
+      flexLayout = {
+        direction:       cs.flexDirection,    // 'row' | 'column' | ...
+        alignItems:      cs.alignItems,       // 'flex-start' | 'center' | ...
+        justifyContent:  cs.justifyContent,   // 'flex-start' | 'space-between' | ...
+        gap:             parsePx(cs.gap),
+        rowGap:          parsePx(cs.rowGap),
+        columnGap:       parsePx(cs.columnGap),
+      };
+    }
+
     const layer = {
       type,
       tagName: el.tagName,
@@ -376,6 +389,10 @@ export async function captureScript() {
         bottom: parsePx(cs.paddingBottom),
         left:   parsePx(cs.paddingLeft),
       },
+      // Flex child properties (used by parent to set HUG/FILL sizing)
+      flexGrow:  parseFloat(cs.flexGrow)  || 0,
+      alignSelf: cs.alignSelf,
+      flexLayout,
       children: [],
     };
 

@@ -49,6 +49,15 @@ interface TextInfo {
   inlineColors?: InlineColor[];
 }
 
+interface FlexLayout {
+  direction: string;      // 'row' | 'column' | 'row-reverse' | 'column-reverse'
+  alignItems: string;     // 'flex-start' | 'center' | 'flex-end' | 'stretch' | ...
+  justifyContent: string; // 'flex-start' | 'center' | 'space-between' | ...
+  gap: number;
+  rowGap: number;
+  columnGap: number;
+}
+
 interface Layer {
   type: 'FRAME' | 'TEXT' | 'INPUT' | 'IMAGE' | 'SVG';
   tagName: string;
@@ -61,6 +70,9 @@ interface Layer {
   fills: Fill[];
   strokes: Stroke[];
   effects: Shadow[];
+  flexLayout?: FlexLayout;
+  flexGrow?: number;
+  alignSelf?: string;
   text?: TextInfo;
   svgContent?: string;
   children: Layer[];
@@ -291,7 +303,7 @@ function applyTextTransform(content: string, transform: string): string {
 
 // ─── Build TEXT node ──────────────────────────────────────────────────────────
 
-async function buildText(layer: Layer, images: Record<string, string>): Promise<SceneNode | null> {
+async function buildText(layer: Layer, images: Record<string, string>, parentIsAutoLayout = false): Promise<SceneNode | null> {
   const t = layer.text!;
   if (!t.content) return null;
 
@@ -381,11 +393,17 @@ async function buildText(layer: Layer, images: Record<string, string>): Promise<
     return frame;
   }
 
-  // Standalone text — lock width to browser value, let height auto-adjust.
-  // NONE would clip text when Figma's font metrics differ slightly from Chrome;
-  // HEIGHT wraps within the correct column width and adjusts height gracefully.
-  node.textAutoResize = 'HEIGHT';
-  node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
+  if (parentIsAutoLayout) {
+    // Inside a flex container — let Figma's layout engine handle size.
+    // WIDTH_AND_HEIGHT: text node auto-sizes to content; layout engine spaces it.
+    node.textAutoResize = 'WIDTH_AND_HEIGHT';
+    // Don't call resize() — the auto-layout parent controls layout.
+  } else {
+    // Standalone (absolute) text — lock width to browser value so text wraps
+    // within the correct column, height adjusts if Figma fonts differ slightly.
+    node.textAutoResize = 'HEIGHT';
+    node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
+  }
 
   node.x = layer.x;
   node.y = layer.y;
@@ -408,13 +426,28 @@ async function buildSvg(layer: Layer): Promise<FrameNode | null> {
 
 // ─── Build FRAME node ─────────────────────────────────────────────────────────
 
+// CSS justifyContent → Figma primaryAxisAlignItems
+const PRI_AXIS: Record<string, 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN'> = {
+  'flex-start': 'MIN', 'start': 'MIN', 'left': 'MIN', 'normal': 'MIN',
+  'center': 'CENTER',
+  'flex-end': 'MAX', 'end': 'MAX', 'right': 'MAX',
+  'space-between': 'SPACE_BETWEEN',
+  'space-around': 'SPACE_BETWEEN',
+  'space-evenly': 'SPACE_BETWEEN',
+};
+
+// CSS alignItems → Figma counterAxisAlignItems
+const CTR_AXIS: Record<string, 'MIN' | 'CENTER' | 'MAX' | 'BASELINE'> = {
+  'flex-start': 'MIN', 'start': 'MIN', 'self-start': 'MIN',
+  'center': 'CENTER',
+  'flex-end': 'MAX', 'end': 'MAX', 'self-end': 'MAX',
+  'stretch': 'MIN',  // approximation — FILL sizing handles this
+  'baseline': 'BASELINE',
+};
+
 async function buildFrame(layer: Layer, images: Record<string, string>): Promise<FrameNode> {
   const node = figma.createFrame();
   node.name = layer.name || layer.tagName.toLowerCase();
-
-  // Always absolute positioning — Auto Layout ignores x/y and rearranges children.
-  node.layoutMode = 'NONE';
-
   node.x = layer.x;
   node.y = layer.y;
   node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
@@ -427,11 +460,74 @@ async function buildFrame(layer: Layer, images: Record<string, string>): Promise
   applyEffects(node, layer.effects);
   applyBorderRadius(node, layer.borderRadius);
 
+  // ── CSS flex → Figma Auto Layout ─────────────────────────────────────────
+  const fl = layer.flexLayout;
+  let isAutoLayout = false;
+  let alDir: 'HORIZONTAL' | 'VERTICAL' = 'HORIZONTAL';
+
+  if (fl) {
+    isAutoLayout = true;
+    alDir = fl.direction.startsWith('column') ? 'VERTICAL' : 'HORIZONTAL';
+    node.layoutMode = alDir;
+
+    // Gap: for VERTICAL use rowGap, for HORIZONTAL use columnGap (fallback to gap)
+    const effectiveGap = alDir === 'VERTICAL'
+      ? (fl.rowGap || fl.gap)
+      : (fl.columnGap || fl.gap);
+    if (effectiveGap > 0) node.itemSpacing = effectiveGap;
+
+    node.primaryAxisAlignItems   = PRI_AXIS[fl.justifyContent] ?? 'MIN';
+    node.counterAxisAlignItems   = CTR_AXIS[fl.alignItems]     ?? 'MIN';
+
+    // Keep browser-measured dimensions — don't let auto-layout shrink-wrap
+    node.primaryAxisSizingMode   = 'FIXED';
+    node.counterAxisSizingMode   = 'FIXED';
+
+    // Apply CSS padding to Figma auto-layout padding
+    const p = layer.padding;
+    node.paddingTop    = p.top;
+    node.paddingRight  = p.right;
+    node.paddingBottom = p.bottom;
+    node.paddingLeft   = p.left;
+  } else {
+    node.layoutMode = 'NONE';
+  }
+
+  // ── Children ──────────────────────────────────────────────────────────────
   for (const child of layer.children) {
-    const childNode = await buildLayer(child, images);
-    if (childNode) {
-      node.appendChild(childNode);
-      // Re-apply position after append — Figma may reset it
+    const childNode = await buildLayer(child, images, isAutoLayout);
+    if (!childNode) continue;
+
+    node.appendChild(childNode);
+
+    if (isAutoLayout) {
+      // Set layout sizing AFTER append (Figma requires parent to be auto-layout first)
+      const grow = child.flexGrow ?? 0;
+
+      if (childNode.type === 'TEXT') {
+        // Text in auto-layout: HUG both axes so it sizes to content
+        try { (childNode as TextNode).layoutSizingHorizontal = 'HUG'; } catch { /* mixed */ }
+        try { (childNode as TextNode).layoutSizingVertical   = 'HUG'; } catch { /* mixed */ }
+      } else {
+        const frame = childNode as FrameNode;
+        // flex-grow children stretch along the main axis
+        if (grow > 0) {
+          try {
+            if (alDir === 'HORIZONTAL') frame.layoutSizingHorizontal = 'FILL';
+            else                         frame.layoutSizingVertical   = 'FILL';
+          } catch { /* skip if not allowed */ }
+        }
+        // alignItems:stretch → counter axis FILL
+        if (fl!.alignItems === 'stretch') {
+          try {
+            if (alDir === 'HORIZONTAL') frame.layoutSizingVertical   = 'FILL';
+            else                         frame.layoutSizingHorizontal = 'FILL';
+          } catch { /* skip */ }
+        }
+      }
+      // In auto-layout mode x/y is managed by layout engine — don't override
+    } else {
+      // Absolute layout: re-apply position after append (Figma may reset it)
       childNode.x = child.x;
       childNode.y = child.y;
     }
@@ -442,8 +538,8 @@ async function buildFrame(layer: Layer, images: Record<string, string>): Promise
 
 // ─── Main dispatch ────────────────────────────────────────────────────────────
 
-async function buildLayer(layer: Layer, images: Record<string, string>): Promise<SceneNode | null> {
-  if (layer.type === 'TEXT' || layer.type === 'INPUT') return buildText(layer, images);
+async function buildLayer(layer: Layer, images: Record<string, string>, parentIsAutoLayout = false): Promise<SceneNode | null> {
+  if (layer.type === 'TEXT' || layer.type === 'INPUT') return buildText(layer, images, parentIsAutoLayout);
   if (layer.type === 'SVG') return buildSvg(layer);
   return buildFrame(layer, images);
 }
