@@ -11,16 +11,36 @@ export async function captureScript() {
     'TEMPLATE', 'IFRAME', 'BR', 'WBR', 'HR',
   ]);
 
-  // Inline elements AND line-break elements — when ALL element children are in this
-  // set, treat the parent as a single TEXT node to preserve text continuity across
-  // mixed content like: "Hello <br> <span>world</span> foo".
+  // Inline elements AND line-break elements.  When ALL element children of a node
+  // are in this set the node is collapsed to a single TEXT layer so that plain
+  // text runs (DOM text nodes) between the inline children are not silently lost.
+  // BR/WBR must be included so <h1>text<br><span>…</span></h1> collapses too.
   const INLINE_TAGS = new Set([
     'SPAN', 'A', 'EM', 'STRONG', 'B', 'I', 'U', 'S',
     'CODE', 'KBD', 'SAMP', 'VAR', 'CITE', 'DFN', 'ABBR',
     'SMALL', 'SUB', 'SUP', 'MARK', 'DEL', 'INS', 'TIME',
-    'BDI', 'BDO',
-    'BR', 'WBR', // line-break elements are inline — must be included so <h1>text<br><span>…</span></h1> collapses to TEXT
+    'BDI', 'BDO', 'BR', 'WBR',
   ]);
+
+  // ─── Generic helpers ──────────────────────────────────────────────────────────
+
+  function parsePx(val) { return parseFloat(val) || 0; }
+
+  /** Split a CSS string at top-level commas (skipping commas inside parentheses). */
+  function splitTopLevel(str, sep = ',') {
+    const parts = [];
+    let depth = 0, start = 0;
+    for (let i = 0; i < str.length; i++) {
+      if (str[i] === '(') depth++;
+      else if (str[i] === ')') depth--;
+      else if (str[i] === sep && depth === 0) {
+        parts.push(str.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    parts.push(str.slice(start).trim());
+    return parts;
+  }
 
   // ─── Color helpers ───────────────────────────────────────────────────────────
 
@@ -37,7 +57,62 @@ export async function captureScript() {
     return rgba(+m[1], +m[2], +m[3], a);
   }
 
-  function parsePx(val) { return parseFloat(val) || 0; }
+  // ─── Gradient parsing ─────────────────────────────────────────────────────────
+
+  /**
+   * Parse a single computed CSS linear-gradient() string into a structured object.
+   * getComputedStyle always normalises colors to rgb()/rgba() so we can rely on
+   * the parseColor helper for stop colors.
+   */
+  function parseLinearGradient(inner) {
+    const parts = splitTopLevel(inner, ',');
+    let angle = 180; // default = "to bottom"
+    let stopStart = 0;
+
+    const first = parts[0].trim();
+    const degM = first.match(/^(-?[\d.]+)deg$/);
+    if (degM) {
+      angle = parseFloat(degM[1]);
+      stopStart = 1;
+    } else if (first.startsWith('to ')) {
+      const dir = first.slice(3).trim();
+      const map = {
+        'top': 0, 'top right': 45, 'right top': 45,
+        'right': 90, 'bottom right': 135, 'right bottom': 135,
+        'bottom': 180, 'bottom left': 225, 'left bottom': 225,
+        'left': 270, 'top left': 315, 'left top': 315,
+      };
+      if (dir in map) { angle = map[dir]; stopStart = 1; }
+    } else if (/^-?[\d.]+rad$/.test(first)) {
+      angle = parseFloat(first) * 180 / Math.PI; stopStart = 1;
+    } else if (/^-?[\d.]+turn$/.test(first)) {
+      angle = parseFloat(first) * 360; stopStart = 1;
+    }
+
+    const stops = [];
+    for (let i = stopStart; i < parts.length; i++) {
+      const p = parts[i].trim();
+      // Each stop is: <color> [<position>]
+      // getComputedStyle always gives rgb/rgba colors
+      const m = p.match(/^(rgba?\([^)]+\))\s*([\d.]+%|[\d.]+px)?/);
+      if (!m) continue;
+      const color = parseColor(m[1]);
+      if (!color) continue;
+      const position = m[2]
+        ? (m[2].endsWith('%') ? parseFloat(m[2]) / 100 : null)
+        : null;
+      stops.push({ color, position });
+    }
+
+    if (stops.length < 2) return null;
+
+    // Distribute positions for stops that don't have explicit ones
+    for (let i = 0; i < stops.length; i++) {
+      if (stops[i].position === null) stops[i].position = i / (stops.length - 1);
+    }
+
+    return { type: 'LINEAR', angle, stops };
+  }
 
   // ─── Box shadow ──────────────────────────────────────────────────────────────
 
@@ -59,6 +134,20 @@ export async function captureScript() {
     return shadows;
   }
 
+  function parseTextShadow(str) {
+    if (!str || str === 'none') return [];
+    const shadows = [];
+    // text-shadow: x y blur color (no spread, no inset)
+    const regex = /(-?\d+(?:\.\d+)?px)\s+(-?\d+(?:\.\d+)?px)\s+(-?\d+(?:\.\d+)?px)\s+(rgba?\([^)]+\))/g;
+    let m;
+    while ((m = regex.exec(str)) !== null) {
+      const color = parseColor(m[4]);
+      if (!color) continue;
+      shadows.push({ x: parsePx(m[1]), y: parsePx(m[2]), blur: parsePx(m[3]), color });
+    }
+    return shadows;
+  }
+
   // ─── Border radius ───────────────────────────────────────────────────────────
 
   function parseBorderRadius(cs) {
@@ -74,16 +163,35 @@ export async function captureScript() {
 
   function extractFills(el, cs) {
     const fills = [];
+
     const bgColor = parseColor(cs.backgroundColor);
     if (bgColor) fills.push({ type: 'SOLID', color: bgColor });
 
     const bgImage = cs.backgroundImage;
     if (bgImage && bgImage !== 'none') {
-      if (bgImage.includes('gradient')) {
-        fills.push({ type: 'GRADIENT', gradient: { type: 'LINEAR', raw: bgImage } });
-      } else {
-        const m = bgImage.match(/url\(["']?([^"')]+)["']?\)/);
-        if (m) fills.push({ type: 'IMAGE', url: m[1] });
+      // backgroundImage can be a comma-separated stack of layers.
+      // Split at top-level commas so we handle each layer individually.
+      const layers = splitTopLevel(bgImage, ',');
+      // Re-join adjacent parts that belong to the same function call.
+      // After splitTopLevel each element is already one layer because commas
+      // inside gradient() have depth > 0 and are not split.
+      for (const layer of layers) {
+        const s = layer.trim();
+        if (s.includes('gradient')) {
+          // Extract function name and inner content
+          const fnM = s.match(/^([\w-]+)-gradient\((.+)\)$/s);
+          if (fnM) {
+            const fnType = fnM[1];
+            if (fnType === 'linear') {
+              const g = parseLinearGradient(fnM[2]);
+              if (g) fills.push({ type: 'GRADIENT', gradient: g });
+            }
+            // radial / conic: skip for now
+          }
+        } else {
+          const m = s.match(/url\(["']?([^"')]+)["']?\)/);
+          if (m) fills.push({ type: 'IMAGE', url: m[1] });
+        }
       }
     }
 
@@ -105,6 +213,12 @@ export async function captureScript() {
         return [{ side: side.toLowerCase(), width: w, color }];
       }
     }
+    // Also check CSS outline (badges sometimes use outline instead of border)
+    const outlineW = parsePx(cs.outlineWidth);
+    const outlineColor = parseColor(cs.outlineColor);
+    if (outlineW > 0 && outlineColor) {
+      return [{ side: 'all', width: outlineW, color: outlineColor }];
+    }
     return [];
   }
 
@@ -118,15 +232,17 @@ export async function captureScript() {
   }
 
   function hasVisualBox(cs) {
-    const bgColor = cs.backgroundColor;
-    const hasBg = bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent';
+    const bg = cs.backgroundColor;
+    const hasBg = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent';
     const hasBorder = ['Top', 'Right', 'Bottom', 'Left'].some(s => parsePx(cs[`border${s}Width`]) > 0);
-    return hasBg || hasBorder;
+    const hasOutline = parsePx(cs.outlineWidth) > 0;
+    return hasBg || hasBorder || hasOutline;
   }
 
-  // Returns true if any non-BR inline child has its own visual box (border/background).
-  // When true, the parent must stay a FRAME so each child is processed individually
-  // and retains its own styling (e.g. pill/badge <span> elements inside a tag list).
+  /**
+   * Returns true when any non-BR inline child has its own visual box.
+   * Keeps tag-list containers as FRAME so each pill badge is built individually.
+   */
   function anyChildHasVisualBox(el) {
     for (const c of el.children) {
       if (c.tagName === 'BR' || c.tagName === 'WBR') continue;
@@ -143,15 +259,13 @@ export async function captureScript() {
     const raw = el.innerText !== undefined ? el.innerText : el.textContent;
     const hasText = raw.trim().length > 0;
 
-    // Leaf element with text → TEXT (buildText will wrap in frame if it has borders)
+    // Pure leaf with text → TEXT (buildText wraps in FRAME if it has borders)
     if (el.childElementCount === 0 && hasText) return 'TEXT';
 
-    // Collapse to a single TEXT node only when:
-    // - all children are inline/BR elements, AND
-    // - the element itself has no visual box, AND
-    // - no child has its own visual box (e.g. badge <span> with border)
-    // The last condition keeps tag-list containers as FRAME so each pill is built
-    // individually and retains its border + border-radius.
+    // Collapse to TEXT only when:
+    //   • all children are inline/BR/WBR
+    //   • the element itself has no visual box
+    //   • no child has its own visual box (e.g. pill badges inside a tag row)
     if (hasOnlyInlineChildren(el) && hasText && !hasVisualBox(cs) && !anyChildHasVisualBox(el)) {
       return 'TEXT';
     }
@@ -162,9 +276,29 @@ export async function captureScript() {
   // ─── Text extraction ─────────────────────────────────────────────────────────
 
   function extractText(el, cs) {
-    // Use innerText so <br> becomes \n and invisible text (display:none) is excluded.
     const raw = (el.innerText !== undefined ? el.innerText : el.textContent) || '';
     const content = raw.replace(/\n{3,}/g, '\n\n').trim();
+
+    const baseColorStr = cs.color;
+    const baseColor = parseColor(baseColorStr);
+
+    // Collect per-span color overrides so that multi-color headings like
+    // <h1>White text <span class="gold">Profit.</span></h1> can be reproduced
+    // using Figma's per-character fill API.
+    const inlineColors = [];
+    if (el.childElementCount > 0) {
+      for (const child of el.children) {
+        if (child.tagName === 'BR' || child.tagName === 'WBR') continue;
+        const childCs = window.getComputedStyle(child);
+        if (childCs.color !== baseColorStr) {
+          const childColor = parseColor(childCs.color);
+          const childText = ((child.innerText !== undefined ? child.innerText : child.textContent) || '').trim();
+          if (childText && childColor) {
+            inlineColors.push({ text: childText, color: childColor });
+          }
+        }
+      }
+    }
 
     return {
       content,
@@ -175,9 +309,11 @@ export async function captureScript() {
       lineHeight: cs.lineHeight,
       letterSpacing: cs.letterSpacing,
       textAlign: cs.textAlign,
-      color: parseColor(cs.color),
+      color: baseColor,
       textDecoration: cs.textDecoration,
       textTransform: cs.textTransform,
+      textShadows: parseTextShadow(cs.textShadow),
+      inlineColors: inlineColors.length > 0 ? inlineColors : undefined,
     };
   }
 
@@ -231,7 +367,6 @@ export async function captureScript() {
       try { layer.svgContent = new XMLSerializer().serializeToString(el); } catch {}
     }
 
-    // Only recurse for container elements
     if (type === 'FRAME') {
       for (const child of el.children) {
         const childLayer = walkNode(child, rect);
