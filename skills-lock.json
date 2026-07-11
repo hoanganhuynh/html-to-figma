@@ -7,17 +7,77 @@
       "skillPath": "skills/figma/SKILL.md",
       "computedHash": "032932bd09f4608a8c2034e2f7dbe9ff9a6cd614e1be3b990bb0e5c77fdc16fa"
     },
+    "figma-code-connect": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-code-connect/SKILL.md",
+      "computedHash": "97115879461e3fb0766ea31d35a370e47f140c0e2896e33ccdd1f8a693e78358"
+    },
+    "figma-create-new-file": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-create-new-file/SKILL.md",
+      "computedHash": "8013ae97a1d34753bdd916225ef781500e072631ef94f7a38975fc15394f0dc2"
+    },
+    "figma-design-to-code": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-design-to-code/SKILL.md",
+      "computedHash": "fbca7232a762fbb632c03710dd4bc5ae032d0d52c25369108fe6e6e10c93ca59"
+    },
     "figma-generate-design": {
       "source": "figma/mcp-server-guide",
       "sourceType": "github",
       "skillPath": "skills/figma-generate-design/SKILL.md",
       "computedHash": "0e3e617068174482c54cfa2e33207f5753c809bbb32f3b2b250370c9e6701e63"
     },
+    "figma-generate-diagram": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-generate-diagram/SKILL.md",
+      "computedHash": "94535a994b6af987fe7f313df9835d8f5cb3d96c0f343be5f7c07b06421c1e2e"
+    },
+    "figma-generate-library": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-generate-library/SKILL.md",
+      "computedHash": "774a1d892cedb896a8476442a65f1b0c7f992071d1433a73fa8e3ea7e162401d"
+    },
+    "figma-implement-motion": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-implement-motion/SKILL.md",
+      "computedHash": "8cc1122a4dee776a240eb2678253a0d9e87390c7dfc4c8fda22589899ca472af"
+    },
+    "figma-swiftui": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-swiftui/SKILL.md",
+      "computedHash": "a1cb0b6966de30e4f4fe50fbc0d9e89aff8d3b1d80143cc3de09f07b7dbb6ef9"
+    },
     "figma-use": {
       "source": "figma/mcp-server-guide",
       "sourceType": "github",
       "skillPath": "skills/figma-use/SKILL.md",
       "computedHash": "8e078a3cc987c5b4538932275af0737ac39aa178eb0923a27d1d38f40946fca2"
+    },
+    "figma-use-figjam": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-use-figjam/SKILL.md",
+      "computedHash": "331230205d64466044baacffbac57f64e0b298178bc6aaf39f37d33e31c20109"
+    },
+    "figma-use-motion": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-use-motion/SKILL.md",
+      "computedHash": "600529f5daf5401ca02490bebc78d403302a61691ca81e1a62a4737bd25b4867"
+    },
+    "figma-use-slides": {
+      "source": "figma/mcp-server-guide",
+      "sourceType": "github",
+      "skillPath": "skills/figma-use-slides/SKILL.md",
+      "computedHash": "93045276a32a1e19ed06c4b57a15158805b444577783039a429c05b85dc14db7"
     }
   }
 }
