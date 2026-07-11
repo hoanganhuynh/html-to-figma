@@ -21,34 +21,41 @@ async function getBrowser() {
  * 3. Return to scroll(0,0) so getBoundingClientRect() gives page-relative coords
  */
 async function preparePageForCapture(page) {
-  // Step 1: Kill all transitions & animations
+  // Step 1: Scroll through full page FIRST so IntersectionObservers fire
+  // and JS scroll-reveal libraries add their "visible" classes.
+  // Do this BEFORE killing animations so natural triggers work.
+  const totalHeight = await page.evaluate(() =>
+    Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+  );
+
+  const step = 600;
+  for (let y = 0; y <= totalHeight; y += step) {
+    await page.evaluate((sy) => window.scrollTo(0, sy), y);
+    await page.waitForTimeout(50);
+  }
+  await page.evaluate((h) => window.scrollTo(0, h), totalHeight);
+  await page.waitForTimeout(200);
+
+  // Step 2: Fast-forward ALL CSS animations to their end state.
+  // animation-delay: -9999s pushes playback position past 100%, so with
+  // fill-mode: forwards the element stays at the final (100%) keyframe.
+  // This fixes elements stuck at opacity:0 (their animation start state).
   await page.addStyleTag({
     content: `
       *, *::before, *::after {
         transition-duration: 0s !important;
         transition-delay: 0s !important;
-        animation-duration: 0s !important;
-        animation-delay: 0s !important;
-        animation-play-state: paused !important;
+        animation-duration: 1s !important;
+        animation-delay: -9999s !important;
+        animation-iteration-count: 1 !important;
+        animation-fill-mode: forwards !important;
+        animation-play-state: running !important;
       }
     `,
   });
-
-  // Step 2: Scroll through full page in steps to fire IntersectionObservers
-  const totalHeight = await page.evaluate(() =>
-    Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
-  );
-
-  const step = 600; // ~2/3 of 900px viewport — overlapping scroll
-  for (let y = 0; y <= totalHeight; y += step) {
-    await page.evaluate((sy) => window.scrollTo(0, sy), y);
-    await page.waitForTimeout(40);
-  }
-  // Make sure the very bottom is reached
-  await page.evaluate((h) => window.scrollTo(0, h), totalHeight);
   await page.waitForTimeout(100);
 
-  // Step 3: Back to top — all getBoundingClientRect() will be page-relative
+  // Step 3: Back to top — getBoundingClientRect() gives page-relative coords
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(200);
 }

@@ -345,11 +345,6 @@ async function buildText(layer: Layer, images: Record<string, string>): Promise<
 
   if (t.textShadows?.length) applyTextEffects(node, t.textShadows);
 
-  // Lock dimensions to browser-captured values.
-  // Using HEIGHT auto-resize would cause Figma to expand the node when fonts
-  // render slightly differently, overlapping elements positioned below it.
-  node.textAutoResize = 'NONE';
-  node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
   node.opacity = layer.opacity;
 
   // If the element has visual boxing (border, background, border-radius), wrap
@@ -360,6 +355,7 @@ async function buildText(layer: Layer, images: Record<string, string>): Promise<
   const hasStroke = layer.strokes.length > 0;
 
   if (hasBackground || hasStroke || hasBorderRadius) {
+    // Badge / pill — exact fixed size so the border-radius looks right.
     const frame = figma.createFrame();
     frame.layoutMode = 'NONE';
     frame.name = layer.name;
@@ -384,6 +380,12 @@ async function buildText(layer: Layer, images: Record<string, string>): Promise<
     frame.appendChild(node);
     return frame;
   }
+
+  // Standalone text — lock width to browser value, let height auto-adjust.
+  // NONE would clip text when Figma's font metrics differ slightly from Chrome;
+  // HEIGHT wraps within the correct column width and adjusts height gracefully.
+  node.textAutoResize = 'HEIGHT';
+  node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
 
   node.x = layer.x;
   node.y = layer.y;

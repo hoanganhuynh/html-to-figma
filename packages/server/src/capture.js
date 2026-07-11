@@ -275,8 +275,28 @@ export async function captureScript() {
 
   // ─── Text extraction ─────────────────────────────────────────────────────────
 
+  /**
+   * Walk childNodes to build text content, converting <br> to \n and
+   * skipping <wbr> entirely (so "Pro<wbr>fit." stays "Profit.", not "Pro\nfit.").
+   * Using innerText is wrong because Chrome sometimes emits \n at <wbr> wrap points.
+   */
+  function getTextContent(node) {
+    let out = '';
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3 /* TEXT_NODE */) {
+        out += child.textContent;
+      } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
+        const tag = child.tagName;
+        if (tag === 'BR') out += '\n';
+        else if (tag === 'WBR') { /* skip — soft-break hint, not a real newline */ }
+        else if (!IGNORE_TAGS.has(tag)) out += getTextContent(child);
+      }
+    }
+    return out;
+  }
+
   function extractText(el, cs) {
-    const raw = (el.innerText !== undefined ? el.innerText : el.textContent) || '';
+    const raw = getTextContent(el);
     const content = raw.replace(/\n{3,}/g, '\n\n').trim();
 
     const baseColorStr = cs.color;
