@@ -148,12 +148,50 @@ function applyFills(node: FrameNode | TextNode, fills: Fill[], images: Record<st
 
 // ─── Strokes ──────────────────────────────────────────────────────────────────
 
+// NOTE: call AFTER applyBorderRadius — per-side stroke weights are rejected by
+// Figma on nodes that have a corner radius, so we must know the radius first.
 function applyStrokes(node: FrameNode, strokes: Stroke[]) {
   if (!strokes.length) return;
-  const s = strokes[0];
-  node.strokes = [{ type: 'SOLID', color: { r: s.color.r, g: s.color.g, b: s.color.b }, opacity: s.color.a }];
-  node.strokeWeight = s.width;
+
+  // Figma allows one stroke color per node — use the first present side's color.
+  const c = strokes[0].color;
+  node.strokes = [{ type: 'SOLID', color: { r: c.r, g: c.g, b: c.b }, opacity: c.a }];
   node.strokeAlign = 'INSIDE';
+
+  const uniform = () => {
+    node.strokeWeight = Math.max(...strokes.map(s => s.width));
+  };
+
+  // CSS outline → uniform border on all four sides.
+  if (strokes.length === 1 && strokes[0].side === 'all') {
+    uniform();
+    return;
+  }
+
+  // Per-side weights are disallowed on rounded nodes — fall back to uniform.
+  const radius = node.cornerRadius;
+  const hasRadius = (typeof radius === 'number' && radius > 0)
+    || node.topLeftRadius > 0 || node.topRightRadius > 0
+    || node.bottomLeftRadius > 0 || node.bottomRightRadius > 0;
+  if (hasRadius) {
+    uniform();
+    return;
+  }
+
+  // Per-side border: only draw the sides that actually have a border so a lone
+  // border-bottom stays an underline instead of becoming a full box outline.
+  const widthOf = (side: string) => {
+    const found = strokes.find(s => s.side === side);
+    return found ? found.width : 0;
+  };
+  try {
+    node.strokeTopWeight = widthOf('top');
+    node.strokeRightWeight = widthOf('right');
+    node.strokeBottomWeight = widthOf('bottom');
+    node.strokeLeftWeight = widthOf('left');
+  } catch {
+    uniform();
+  }
 }
 
 // ─── Effects ─────────────────────────────────────────────────────────────────
@@ -390,9 +428,9 @@ async function buildText(layer: Layer, images: Record<string, string>, parentIsA
     frame.clipsContent = layer.overflow;
     frame.fills = [];
     applyFills(frame, layer.fills, images);
-    applyStrokes(frame, layer.strokes);
-    applyEffects(frame, layer.effects);
     applyBorderRadius(frame, layer.borderRadius);
+    applyStrokes(frame, layer.strokes); // after radius: per-side weights need it
+    applyEffects(frame, layer.effects);
 
     const pad = layer.padding ?? { top: 0, right: 0, bottom: 0, left: 0 };
     const innerW = Math.max(layer.width - pad.left - pad.right, 1);
@@ -462,16 +500,25 @@ async function buildFrame(layer: Layer, images: Record<string, string>): Promise
   node.fills = [];
 
   applyFills(node, layer.fills, images);
-  applyStrokes(node, layer.strokes);
-  applyEffects(node, layer.effects);
   applyBorderRadius(node, layer.borderRadius);
+  applyStrokes(node, layer.strokes); // after radius: per-side weights need it
+  applyEffects(node, layer.effects);
 
   for (const child of layer.children) {
     const childNode = await buildLayer(child, images, false);
     if (!childNode) continue;
     node.appendChild(childNode);
-    // Re-apply position after append — Figma resets x/y to 0 on append
-    childNode.x = child.x;
+    // Re-apply position after append — Figma resets x/y to 0 on append.
+    let cx = child.x;
+    // A single-line text node auto-sized with WIDTH_AND_HEIGHT shrank to the
+    // text's own width. If the original box was centered/right-aligned, keep the
+    // text visually where it was instead of snapping it to the box's left edge.
+    if (childNode.type === 'TEXT' && childNode.textAutoResize === 'WIDTH_AND_HEIGHT') {
+      const align = childNode.textAlignHorizontal;
+      if (align === 'CENTER') cx = child.x + (child.width - childNode.width) / 2;
+      else if (align === 'RIGHT') cx = child.x + (child.width - childNode.width);
+    }
+    childNode.x = cx;
     childNode.y = child.y;
   }
 

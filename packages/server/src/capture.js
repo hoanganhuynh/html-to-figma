@@ -211,17 +211,27 @@ export async function captureScript() {
   const MIN_STROKE_ALPHA = 0.12;
 
   function extractStrokes(cs) {
+    // Capture EACH side independently. Terminal/tech designs use single-side
+    // accents (border-bottom underlines, border-left bars) constantly; drawing
+    // a full rectangle for those turns one underline into a full white box and
+    // litters the whole page with spurious outlines. Only real, present sides
+    // are emitted so the plugin can set per-side stroke weights in Figma.
+    const out = [];
     for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
       const w = parsePx(cs[`border${side}Width`]);
+      const style = cs[`border${side}Style`];
       const color = parseColor(cs[`border${side}Color`]);
-      if (w > 0 && color && color.a >= MIN_STROKE_ALPHA) {
-        return [{ side: side.toLowerCase(), width: w, color }];
+      if (w > 0 && style !== 'none' && color && color.a >= MIN_STROKE_ALPHA) {
+        out.push({ side: side.toLowerCase(), width: w, color });
       }
     }
-    // Also check CSS outline (badges sometimes use outline instead of border)
+    if (out.length) return out;
+
+    // Fall back to CSS outline (badges sometimes use outline) → all four sides.
     const outlineW = parsePx(cs.outlineWidth);
+    const outlineStyle = cs.outlineStyle;
     const outlineColor = parseColor(cs.outlineColor);
-    if (outlineW > 0 && outlineColor && outlineColor.a >= MIN_STROKE_ALPHA) {
+    if (outlineW > 0 && outlineStyle !== 'none' && outlineColor && outlineColor.a >= MIN_STROKE_ALPHA) {
       return [{ side: 'all', width: outlineW, color: outlineColor }];
     }
     return [];
