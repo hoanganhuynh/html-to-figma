@@ -1,8 +1,6 @@
 import http from 'http';
 import { chromium } from 'playwright';
 import { captureScript } from './capture.js';
-import path from 'path';
-import { pathToFileURL } from 'url';
 
 const PORT = 3333;
 
@@ -15,32 +13,70 @@ async function getBrowser() {
   return browser;
 }
 
-async function captureUrl(url) {
+/**
+ * After the page loads, prepare it for pixel-perfect capture:
+ * 1. Disable all CSS transitions/animations so state changes are instant
+ * 2. Scroll through the full page to trigger IntersectionObservers,
+ *    scroll-reveal libraries, lazy loaders, etc.
+ * 3. Return to scroll(0,0) so getBoundingClientRect() gives page-relative coords
+ */
+async function preparePageForCapture(page) {
+  // Step 1: Kill all transitions & animations
+  await page.addStyleTag({
+    content: `
+      *, *::before, *::after {
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+        animation-play-state: paused !important;
+      }
+    `,
+  });
+
+  // Step 2: Scroll through full page in steps to fire IntersectionObservers
+  const totalHeight = await page.evaluate(() =>
+    Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)
+  );
+
+  const step = 600; // ~2/3 of 900px viewport — overlapping scroll
+  for (let y = 0; y <= totalHeight; y += step) {
+    await page.evaluate((sy) => window.scrollTo(0, sy), y);
+    await page.waitForTimeout(40);
+  }
+  // Make sure the very bottom is reached
+  await page.evaluate((h) => window.scrollTo(0, h), totalHeight);
+  await page.waitForTimeout(100);
+
+  // Step 3: Back to top — all getBoundingClientRect() will be page-relative
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(200);
+}
+
+async function captureUrl(url, viewport = { width: 1440, height: 900 }) {
   const b = await getBrowser();
-  const page = await b.newPage({ viewport: { width: 1440, height: 900 } });
+  const page = await b.newPage({ viewport });
   try {
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-    // Wait a bit extra for fonts/images
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(800);
+    await preparePageForCapture(page);
     const layers = await page.evaluate(captureScript);
-    // Collect all image URLs from layers
-    const imageUrls = collectImageUrls(layers);
-    const images = await downloadImages(page, imageUrls);
+    const images = await downloadImages(page, collectImageUrls(layers));
     return { layers, images };
   } finally {
     await page.close();
   }
 }
 
-async function captureHtmlContent(html) {
+async function captureHtmlContent(html, viewport = { width: 1440, height: 900 }) {
   const b = await getBrowser();
-  const page = await b.newPage({ viewport: { width: 1440, height: 900 } });
+  const page = await b.newPage({ viewport });
   try {
     await page.setContent(html, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(800);
+    await preparePageForCapture(page);
     const layers = await page.evaluate(captureScript);
-    const imageUrls = collectImageUrls(layers);
-    const images = await downloadImages(page, imageUrls);
+    const images = await downloadImages(page, collectImageUrls(layers));
     return { layers, images };
   } finally {
     await page.close();
@@ -52,9 +88,7 @@ function collectImageUrls(node, urls = new Set()) {
   for (const fill of (node.fills || [])) {
     if (fill.type === 'IMAGE' && fill.url) urls.add(fill.url);
   }
-  for (const child of (node.children || [])) {
-    collectImageUrls(child, urls);
-  }
+  for (const child of (node.children || [])) collectImageUrls(child, urls);
   return urls;
 }
 
@@ -68,9 +102,7 @@ async function downloadImages(page, urls) {
         const ct = response.headers()['content-type'] || 'image/png';
         images[url] = `data:${ct};base64,${buffer.toString('base64')}`;
       }
-    } catch {
-      // Skip failed images
-    }
+    } catch { /* skip */ }
   }
   return images;
 }
@@ -85,43 +117,38 @@ function corsHeaders() {
 }
 
 const server = http.createServer(async (req, res) => {
-  // Handle preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, corsHeaders());
     res.end();
     return;
   }
 
-  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const urlObj = new URL(req.url, `http://localhost:${PORT}`);
 
-  // Health check
-  if (url.pathname === '/health') {
+  if (urlObj.pathname === '/health') {
     res.writeHead(200, corsHeaders());
     res.end(JSON.stringify({ status: 'ok' }));
     return;
   }
 
-  // Main capture endpoint
-  if (url.pathname === '/capture' && req.method === 'POST') {
+  if (urlObj.pathname === '/capture' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => (body += chunk));
     req.on('end', async () => {
       try {
         const { url: targetUrl, html, viewport } = JSON.parse(body);
-
         if (!targetUrl && !html) {
           res.writeHead(400, corsHeaders());
           res.end(JSON.stringify({ error: 'url or html required' }));
           return;
         }
 
-        console.log(`[capture] ${targetUrl || 'html content'}`);
-        let result;
-        if (html) {
-          result = await captureHtmlContent(html);
-        } else {
-          result = await captureUrl(targetUrl);
-        }
+        const vp = viewport || { width: 1440, height: 900 };
+        console.log(`[capture] ${targetUrl || '(html content)'} @ ${vp.width}x${vp.height}`);
+
+        const result = html
+          ? await captureHtmlContent(html, vp)
+          : await captureUrl(targetUrl, vp);
 
         res.writeHead(200, corsHeaders());
         res.end(JSON.stringify(result));
@@ -145,7 +172,6 @@ server.listen(PORT, () => {
 });
 
 process.on('SIGINT', async () => {
-  console.log('\nShutting down...');
   if (browser) await browser.close();
   server.close();
   process.exit(0);
