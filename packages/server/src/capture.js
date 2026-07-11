@@ -300,9 +300,34 @@ export async function captureScript() {
     return out;
   }
 
+  /**
+   * Count how many visual lines the element's text actually occupies in the
+   * browser. A Range over the element's contents yields one client rect per
+   * inline fragment per line; grouping by rounded top gives the true line count.
+   * This is ground truth — far more reliable than re-deriving it in the plugin
+   * from font-size heuristics, and it's what decides whether Figma may wrap.
+   */
+  function measureLineCount(el) {
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const rects = range.getClientRects();
+      if (!rects.length) return 1;
+      const tops = new Set();
+      for (const r of rects) {
+        if (r.width === 0 || r.height === 0) continue;
+        tops.add(Math.round(r.top));
+      }
+      return Math.max(tops.size, 1);
+    } catch {
+      return 1;
+    }
+  }
+
   function extractText(el, cs) {
     const raw = getTextContent(el);
     const content = raw.replace(/\n{3,}/g, '\n\n').trim();
+    const lineCount = measureLineCount(el);
 
     const baseColorStr = cs.color;
     const baseColor = parseColor(baseColorStr);
@@ -339,6 +364,7 @@ export async function captureScript() {
       textTransform: cs.textTransform,
       textShadows: parseTextShadow(cs.textShadow),
       inlineColors: inlineColors.length > 0 ? inlineColors : undefined,
+      lineCount,
     };
   }
 

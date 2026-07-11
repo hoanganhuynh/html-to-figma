@@ -47,6 +47,7 @@ interface TextInfo {
   textDecoration: string; textTransform: string;
   textShadows?: TextShadow[];
   inlineColors?: InlineColor[];
+  lineCount?: number;
 }
 
 interface FlexLayout {
@@ -404,15 +405,16 @@ async function buildText(layer: Layer, images: Record<string, string>, parentIsA
     return frame;
   }
 
-  // For single-line text, use WIDTH_AND_HEIGHT so Figma auto-sizes to fit the
-  // content and avoids word-wrap caused by minor browser↔Figma font metric gaps.
-  // For multi-line text (paragraph wrapped at a specific column width), fix the
-  // width and let height grow (HEIGHT mode).
-  let lineHeightPx = t.fontSize * 1.4;
-  if (t.lineHeight && t.lineHeight !== 'normal' && t.lineHeight.endsWith('px')) {
-    lineHeightPx = parseFloat(t.lineHeight);
-  }
-  const isSingleLine = !content.includes('\n') && layer.height < lineHeightPx * 2.0;
+  // Single-line text (measured in the browser) must NEVER wrap in Figma.
+  // Figma renders many fonts a hair wider than Chrome, so a heading the browser
+  // fit on one line (e.g. "Profit.") would wrap to two — and since the box
+  // height was sized for one line, the second line overflows and overlaps the
+  // content below. Using WIDTH_AND_HEIGHT lets Figma auto-size the box to fit
+  // the text on one line, eliminating the wrap entirely.
+  //
+  // Multi-line text keeps its captured width and grows in height (HEIGHT mode):
+  // if Figma wraps one extra line the box just gets taller, never overflowing.
+  const isSingleLine = (t.lineCount ?? 1) <= 1 && !content.includes('\n');
 
   if (isSingleLine) {
     node.textAutoResize = 'WIDTH_AND_HEIGHT';
