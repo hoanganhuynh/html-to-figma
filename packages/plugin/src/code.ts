@@ -113,19 +113,23 @@ function applyBorderRadius(node: FrameNode, br: BorderRadius) {
 function figmaFontStyle(weight: string, italic: boolean): string {
   const w = parseInt(weight) || 400;
   if (italic) {
+    if (w >= 900) return 'Black Italic';
+    if (w >= 800) return 'ExtraBold Italic';
     if (w >= 700) return 'Bold Italic';
     if (w >= 600) return 'SemiBold Italic';
     if (w >= 500) return 'Medium Italic';
+    if (w <= 200) return 'ExtraLight Italic';
     if (w <= 300) return 'Light Italic';
     return 'Italic';
   }
+  if (w >= 900) return 'Black';
   if (w >= 800) return 'ExtraBold';
   if (w >= 700) return 'Bold';
   if (w >= 600) return 'SemiBold';
   if (w >= 500) return 'Medium';
-  if (w <= 300) return 'Light';
-  if (w <= 200) return 'ExtraLight';
   if (w <= 100) return 'Thin';
+  if (w <= 200) return 'ExtraLight';
+  if (w <= 300) return 'Light';
   return 'Regular';
 }
 
@@ -136,9 +140,29 @@ async function loadFontSafe(family: string, weight: string, italic: boolean): Pr
   if (fontCache[key]) return fontCache[key];
 
   const style = figmaFontStyle(weight, italic);
+  const w = parseInt(weight) || 400;
+
+  // Build weight-descending fallback styles so heavy weights try Black → ExtraBold → Bold
+  const weightStyles: string[] = [];
+  if (!italic) {
+    if (w >= 900) weightStyles.push('Black', 'ExtraBold', 'Bold');
+    else if (w >= 800) weightStyles.push('ExtraBold', 'Black', 'Bold');
+    else if (w >= 700) weightStyles.push('Bold', 'SemiBold');
+    else if (w >= 600) weightStyles.push('SemiBold', 'Medium', 'Bold');
+    else if (w >= 500) weightStyles.push('Medium', 'SemiBold', 'Regular');
+    else if (w <= 200) weightStyles.push('ExtraLight', 'Thin', 'Light', 'Regular');
+    else if (w <= 300) weightStyles.push('Light', 'ExtraLight', 'Regular');
+    weightStyles.push('Regular');
+  } else {
+    if (w >= 900) weightStyles.push('Black Italic', 'ExtraBold Italic', 'Bold Italic');
+    else if (w >= 800) weightStyles.push('ExtraBold Italic', 'Black Italic', 'Bold Italic');
+    else if (w >= 700) weightStyles.push('Bold Italic', 'SemiBold Italic');
+    weightStyles.push('Italic', 'Regular');
+  }
+
   const fallbacks: FontName[] = [
     { family, style },
-    { family, style: italic ? 'Italic' : 'Regular' },
+    ...weightStyles.filter(s => s !== style).map(s => ({ family, style: s })),
     { family: 'Inter', style: italic ? 'Italic' : 'Regular' },
     { family: 'Inter', style: 'Regular' },
   ];
@@ -151,7 +175,6 @@ async function loadFontSafe(family: string, weight: string, italic: boolean): Pr
     } catch { /* try next */ }
   }
 
-  // Last resort
   const last = { family: 'Inter', style: 'Regular' };
   await figma.loadFontAsync(last);
   fontCache[key] = last;
@@ -220,8 +243,8 @@ async function buildText(layer: Layer): Promise<TextNode | null> {
   if (t.textDecoration?.includes('underline')) node.textDecoration = 'UNDERLINE';
   else if (t.textDecoration?.includes('line-through')) node.textDecoration = 'STRIKETHROUGH';
 
-  // Fix dimensions to match browser-rendered size
-  node.textAutoResize = 'NONE';
+  // Lock width to match captured layout; let height grow with content
+  node.textAutoResize = 'HEIGHT';
   node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
   node.x = layer.x;
   node.y = layer.y;

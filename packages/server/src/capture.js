@@ -4,7 +4,20 @@
  * with resolved computed styles and bounding boxes.
  */
 export async function captureScript() {
-  const IGNORE_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'META', 'LINK', 'HEAD', 'TEMPLATE', 'IFRAME']);
+
+  // Tags to skip entirely
+  const IGNORE_TAGS = new Set([
+    'SCRIPT', 'STYLE', 'NOSCRIPT', 'META', 'LINK', 'HEAD',
+    'TEMPLATE', 'IFRAME', 'BR', 'WBR', 'HR',
+  ]);
+
+  // Inline elements: when ALL children are inline, treat parent as a single TEXT node
+  const INLINE_TAGS = new Set([
+    'SPAN', 'A', 'EM', 'STRONG', 'B', 'I', 'U', 'S',
+    'CODE', 'KBD', 'SAMP', 'VAR', 'CITE', 'DFN', 'ABBR',
+    'SMALL', 'SUB', 'SUP', 'MARK', 'DEL', 'INS', 'TIME',
+    'BDI', 'BDO',
+  ]);
 
   // ─── Color helpers ───────────────────────────────────────────────────────────
 
@@ -21,9 +34,7 @@ export async function captureScript() {
     return rgba(+m[1], +m[2], +m[3], a);
   }
 
-  function parsePx(val) {
-    return parseFloat(val) || 0;
-  }
+  function parsePx(val) { return parseFloat(val) || 0; }
 
   // ─── Box shadow ──────────────────────────────────────────────────────────────
 
@@ -37,12 +48,9 @@ export async function captureScript() {
       if (!color) continue;
       shadows.push({
         type: m[6] ? 'innerShadow' : 'dropShadow',
-        x: parsePx(m[1]),
-        y: parsePx(m[2]),
-        blur: parsePx(m[3]),
-        spread: parsePx(m[4] || '0px'),
-        color,
-        visible: true,
+        x: parsePx(m[1]), y: parsePx(m[2]),
+        blur: parsePx(m[3]), spread: parsePx(m[4] || '0px'),
+        color, visible: true,
       });
     }
     return shadows;
@@ -61,20 +69,6 @@ export async function captureScript() {
 
   // ─── Fills ───────────────────────────────────────────────────────────────────
 
-  function getBackgroundImageUrl(cs) {
-    const bg = cs.backgroundImage;
-    if (!bg || bg === 'none') return null;
-    if (bg.includes('gradient')) return null;
-    const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
-    return m ? m[1] : null;
-  }
-
-  function parseLinearGradient(str) {
-    // Extract angle and stops from linear-gradient(...)
-    // Simplified: capture raw for now
-    return { type: 'LINEAR', raw: str };
-  }
-
   function extractFills(el, cs) {
     const fills = [];
     const bgColor = parseColor(cs.backgroundColor);
@@ -83,10 +77,10 @@ export async function captureScript() {
     const bgImage = cs.backgroundImage;
     if (bgImage && bgImage !== 'none') {
       if (bgImage.includes('gradient')) {
-        fills.push({ type: 'GRADIENT', gradient: parseLinearGradient(bgImage) });
+        fills.push({ type: 'GRADIENT', gradient: { type: 'LINEAR', raw: bgImage } });
       } else {
-        const url = getBackgroundImageUrl(cs);
-        if (url) fills.push({ type: 'IMAGE', url });
+        const m = bgImage.match(/url\(["']?([^"')]+)["']?\)/);
+        if (m) fills.push({ type: 'IMAGE', url: m[1] });
       }
     }
 
@@ -101,56 +95,61 @@ export async function captureScript() {
   // ─── Strokes ─────────────────────────────────────────────────────────────────
 
   function extractStrokes(cs) {
-    const strokes = [];
-    const sides = ['Top', 'Right', 'Bottom', 'Left'];
-    for (const side of sides) {
+    for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
       const w = parsePx(cs[`border${side}Width`]);
       const color = parseColor(cs[`border${side}Color`]);
       if (w > 0 && color) {
-        strokes.push({ side: side.toLowerCase(), width: w, color });
-        break;
+        return [{ side: side.toLowerCase(), width: w, color }];
       }
     }
-    return strokes;
+    return [];
   }
 
   // ─── Node type detection ─────────────────────────────────────────────────────
 
-  function isSvgEl(el) {
-    return el instanceof SVGElement;
-  }
+  function isSvgEl(el) { return el instanceof SVGElement; }
 
   /**
-   * Determine the Figma node type for an element.
-   * Key rule: any leaf element (no child elements) with non-empty text → TEXT.
-   * This catches div, span, p, h1-h6, button, td, li, etc.
+   * Returns true if every child element is an inline-level element.
+   * If so, we treat the parent as a single TEXT node to preserve text continuity
+   * across mixed content like: "Hello <span>world</span> foo".
    */
+  function hasOnlyInlineChildren(el) {
+    if (el.childElementCount === 0) return false;
+    return [...el.children].every(c => INLINE_TAGS.has(c.tagName));
+  }
+
   function nodeType(el) {
     if (isSvgEl(el)) return 'SVG';
     if (el.tagName === 'IMG') return 'IMAGE';
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return 'INPUT';
-    // Leaf element with visible text → TEXT node in Figma
-    if (el.childElementCount === 0) {
-      const text = el.textContent.trim();
-      if (text) return 'TEXT';
-    }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return 'INPUT';
+
+    const hasText = el.textContent.trim().length > 0;
+
+    // Leaf element with text content → TEXT
+    if (el.childElementCount === 0 && hasText) return 'TEXT';
+
+    // Element whose children are ALL inline tags → treat whole block as TEXT
+    // This handles <h1>Foo <span>Bar</span></h1> — keeps full text together
+    if (hasOnlyInlineChildren(el) && hasText) return 'TEXT';
+
     return 'FRAME';
   }
 
-  // ─── Text info ───────────────────────────────────────────────────────────────
+  // ─── Text extraction ─────────────────────────────────────────────────────────
 
   function extractText(el, cs) {
-    // For input elements, get the value or placeholder
-    let content = el.tagName === 'INPUT'
-      ? (el.value || el.placeholder || '')
-      : el.textContent.trim();
+    // Use innerText so <br> becomes \n and invisible text (display:none) is excluded.
+    // Fall back to textContent if innerText is unavailable.
+    const raw = (el.innerText !== undefined ? el.innerText : el.textContent) || '';
+    const content = raw.replace(/\n{3,}/g, '\n\n').trim(); // collapse excess newlines
 
     return {
       content,
       fontSize: parsePx(cs.fontSize),
       fontFamily: cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
       fontWeight: cs.fontWeight,
-      fontStyle: cs.fontStyle,          // 'italic' | 'normal'
+      fontStyle: cs.fontStyle,
       lineHeight: cs.lineHeight,
       letterSpacing: cs.letterSpacing,
       textAlign: cs.textAlign,
@@ -166,7 +165,6 @@ export async function captureScript() {
     if (IGNORE_TAGS.has(el.tagName)) return null;
 
     const rect = el.getBoundingClientRect();
-    // Skip truly invisible elements (both dimensions zero)
     if (rect.width === 0 && rect.height === 0) return null;
 
     const cs = window.getComputedStyle(el);
@@ -174,20 +172,24 @@ export async function captureScript() {
     if (cs.visibility === 'hidden' && el.childElementCount === 0) return null;
 
     const type = nodeType(el);
+    const name = el.id
+      ? `#${el.id}`
+      : (typeof el.className === 'string' && el.className.trim())
+        ? el.className.trim().split(/\s+/)[0]
+        : el.tagName.toLowerCase();
 
     const layer = {
       type,
       tagName: el.tagName,
-      name: el.id ? `#${el.id}` : (el.className && typeof el.className === 'string' ? el.className.split(' ')[0] : el.tagName.toLowerCase()),
-      // Position relative to parent's top-left corner
+      name,
       x: Math.round(rect.left - (parentRect ? parentRect.left : 0)),
-      y: Math.round(rect.top - (parentRect ? parentRect.top : 0)),
-      width: Math.round(rect.width),
+      y: Math.round(rect.top  - (parentRect ? parentRect.top  : 0)),
+      width:  Math.round(rect.width),
       height: Math.round(rect.height),
       opacity: parseFloat(cs.opacity) ?? 1,
       overflow: cs.overflow === 'hidden' || cs.overflowX === 'hidden' || cs.overflowY === 'hidden',
       borderRadius: parseBorderRadius(cs),
-      fills: extractFills(el, cs),
+      fills:   extractFills(el, cs),
       strokes: extractStrokes(cs),
       effects: parseBoxShadow(cs.boxShadow),
       children: [],
@@ -198,12 +200,10 @@ export async function captureScript() {
     }
 
     if (type === 'SVG') {
-      try {
-        layer.svgContent = new XMLSerializer().serializeToString(el);
-      } catch {}
+      try { layer.svgContent = new XMLSerializer().serializeToString(el); } catch {}
     }
 
-    // Recurse into children for container elements
+    // Only recurse for container elements
     if (type === 'FRAME') {
       for (const child of el.children) {
         const childLayer = walkNode(child, rect);
@@ -214,9 +214,8 @@ export async function captureScript() {
     return layer;
   }
 
-  // ─── Build root ──────────────────────────────────────────────────────────────
+  // ─── Root ────────────────────────────────────────────────────────────────────
 
-  // Scroll to top before capturing to get consistent positions
   window.scrollTo(0, 0);
 
   const body = document.body;
@@ -226,20 +225,14 @@ export async function captureScript() {
     || { r: 1, g: 1, b: 1, a: 1 };
 
   const root = {
-    type: 'FRAME',
-    tagName: 'BODY',
-    name: 'Page',
-    x: 0,
-    y: 0,
-    width: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+    type: 'FRAME', tagName: 'BODY', name: 'Page',
+    x: 0, y: 0,
+    width:  Math.max(document.documentElement.scrollWidth,  document.body.scrollWidth),
     height: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
     fills: [{ type: 'SOLID', color: bgColor }],
-    strokes: [],
-    effects: [],
+    strokes: [], effects: [],
     borderRadius: { tl: 0, tr: 0, br: 0, bl: 0 },
-    opacity: 1,
-    overflow: false,
-    children: [],
+    opacity: 1, overflow: false, children: [],
   };
 
   for (const child of body.children) {
