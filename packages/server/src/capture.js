@@ -205,18 +205,23 @@ export async function captureScript() {
 
   // ─── Strokes ─────────────────────────────────────────────────────────────────
 
+  // Minimum alpha for a border/outline to be included as a Figma stroke.
+  // Very low-alpha borders (rgba(...,0.05)) are decorative noise that look
+  // terrible as Figma strokes when applied to every frame.
+  const MIN_STROKE_ALPHA = 0.12;
+
   function extractStrokes(cs) {
     for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
       const w = parsePx(cs[`border${side}Width`]);
       const color = parseColor(cs[`border${side}Color`]);
-      if (w > 0 && color) {
+      if (w > 0 && color && color.a >= MIN_STROKE_ALPHA) {
         return [{ side: side.toLowerCase(), width: w, color }];
       }
     }
     // Also check CSS outline (badges sometimes use outline instead of border)
     const outlineW = parsePx(cs.outlineWidth);
     const outlineColor = parseColor(cs.outlineColor);
-    if (outlineW > 0 && outlineColor) {
+    if (outlineW > 0 && outlineColor && outlineColor.a >= MIN_STROKE_ALPHA) {
       return [{ side: 'all', width: outlineW, color: outlineColor }];
     }
     return [];
@@ -348,6 +353,8 @@ export async function captureScript() {
     const cs = window.getComputedStyle(el);
     if (cs.display === 'none') return null;
     if (cs.visibility === 'hidden' && el.childElementCount === 0) return null;
+    // Skip fully transparent elements (animation stuck at opacity:0 initial state)
+    if (parseFloat(cs.opacity) === 0 && el.childElementCount === 0) return null;
 
     const type = nodeType(el, cs);
     const name = el.id
