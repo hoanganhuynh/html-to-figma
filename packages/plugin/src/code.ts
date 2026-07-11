@@ -259,8 +259,9 @@ async function buildText(layer: Layer, images: Record<string, string>): Promise<
   if (t.textDecoration?.includes('underline')) node.textDecoration = 'UNDERLINE';
   else if (t.textDecoration?.includes('line-through')) node.textDecoration = 'STRIKETHROUGH';
 
-  // Lock width to match captured layout; let height grow with content
-  node.textAutoResize = 'HEIGHT';
+  // Use browser-captured dimensions exactly. 'HEIGHT' sounds better but causes
+  // Figma to expand the node when fonts differ slightly, overlapping elements below.
+  node.textAutoResize = 'NONE';
   node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
   node.opacity = layer.opacity;
 
@@ -291,7 +292,7 @@ async function buildText(layer: Layer, images: Record<string, string>): Promise<
     const pad = layer.padding ?? { top: 0, right: 0, bottom: 0, left: 0 };
     const innerW = Math.max(layer.width - pad.left - pad.right, 1);
     const innerH = Math.max(layer.height - pad.top - pad.bottom, 1);
-    node.textAutoResize = 'HEIGHT';
+    node.textAutoResize = 'NONE';
     node.resize(innerW, innerH);
     node.x = pad.left;
     node.y = pad.top;

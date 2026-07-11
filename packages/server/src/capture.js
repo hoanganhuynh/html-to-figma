@@ -124,6 +124,17 @@ export async function captureScript() {
     return hasBg || hasBorder;
   }
 
+  // Returns true if any non-BR inline child has its own visual box (border/background).
+  // When true, the parent must stay a FRAME so each child is processed individually
+  // and retains its own styling (e.g. pill/badge <span> elements inside a tag list).
+  function anyChildHasVisualBox(el) {
+    for (const c of el.children) {
+      if (c.tagName === 'BR' || c.tagName === 'WBR') continue;
+      if (hasVisualBox(window.getComputedStyle(c))) return true;
+    }
+    return false;
+  }
+
   function nodeType(el, cs) {
     if (isSvgEl(el)) return 'SVG';
     if (el.tagName === 'IMG') return 'IMAGE';
@@ -135,11 +146,15 @@ export async function captureScript() {
     // Leaf element with text → TEXT (buildText will wrap in frame if it has borders)
     if (el.childElementCount === 0 && hasText) return 'TEXT';
 
-    // Element whose children are all inline/line-break tags → collapse to a single TEXT
-    // node so we capture full innerText (e.g. <h1>Foo<br><span>Bar</span></h1>).
-    // BUT: if the element has its own visual box (border, background), keep it as FRAME
-    // so its styling is preserved — its inline children will be TEXT nodes inside.
-    if (hasOnlyInlineChildren(el) && hasText && !hasVisualBox(cs)) return 'TEXT';
+    // Collapse to a single TEXT node only when:
+    // - all children are inline/BR elements, AND
+    // - the element itself has no visual box, AND
+    // - no child has its own visual box (e.g. badge <span> with border)
+    // The last condition keeps tag-list containers as FRAME so each pill is built
+    // individually and retains its border + border-radius.
+    if (hasOnlyInlineChildren(el) && hasText && !hasVisualBox(cs) && !anyChildHasVisualBox(el)) {
+      return 'TEXT';
+    }
 
     return 'FRAME';
   }
