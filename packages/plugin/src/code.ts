@@ -10,19 +10,25 @@ figma.ui.onmessage = async (msg) => {
   }
 };
 
-// ─── Layer → Figma node ──────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Color { r: number; g: number; b: number; a: number }
 interface Fill { type: 'SOLID' | 'IMAGE' | 'GRADIENT'; color?: Color; url?: string; gradient?: any }
 interface Stroke { side: string; width: number; color: Color }
 interface Shadow { type: 'dropShadow' | 'innerShadow'; x: number; y: number; blur: number; spread: number; color: Color; visible: boolean }
 interface BorderRadius { tl: number; tr: number; br: number; bl: number }
-interface AutoLayout { direction: 'HORIZONTAL' | 'VERTICAL'; gap: number; paddingTop: number; paddingRight: number; paddingBottom: number; paddingLeft: number; alignItems: string; justifyContent: string; wrap: boolean }
-interface TextInfo { content: string; fontSize: number; fontFamily: string; fontWeight: string; lineHeight: string; letterSpacing: string; textAlign: string; color: Color | null; textDecoration: string }
+interface TextInfo {
+  content: string; fontSize: number; fontFamily: string;
+  fontWeight: string; fontStyle: string;
+  lineHeight: string; letterSpacing: string;
+  textAlign: string; color: Color | null;
+  textDecoration: string; textTransform: string;
+}
 
 interface Layer {
-  type: 'FRAME' | 'TEXT' | 'IMAGE' | 'SVG';
+  type: 'FRAME' | 'TEXT' | 'INPUT' | 'IMAGE' | 'SVG';
   tagName: string;
+  name: string;
   x: number; y: number; width: number; height: number;
   opacity: number;
   overflow: boolean;
@@ -30,21 +36,22 @@ interface Layer {
   fills: Fill[];
   strokes: Stroke[];
   effects: Shadow[];
-  autoLayout: AutoLayout | null;
   text?: TextInfo;
   svgContent?: string;
   children: Layer[];
 }
 
-function figmaColor(c: Color): RGBA {
-  return { r: c.r, g: c.g, b: c.b, a: c.a };
-}
+// ─── Fills ────────────────────────────────────────────────────────────────────
 
-function applyFills(node: RectangleNode | FrameNode | TextNode, fills: Fill[], images: Record<string, string>) {
-  const figmaFills: Paint[] = [];
+function applyFills(node: FrameNode | TextNode, fills: Fill[], images: Record<string, string>) {
+  const result: Paint[] = [];
   for (const f of fills) {
     if (f.type === 'SOLID' && f.color) {
-      figmaFills.push({ type: 'SOLID', color: { r: f.color.r, g: f.color.g, b: f.color.b }, opacity: f.color.a });
+      result.push({
+        type: 'SOLID',
+        color: { r: f.color.r, g: f.color.g, b: f.color.b },
+        opacity: f.color.a,
+      });
     } else if (f.type === 'IMAGE' && f.url) {
       const dataUrl = images[f.url];
       if (dataUrl) {
@@ -52,18 +59,18 @@ function applyFills(node: RectangleNode | FrameNode | TextNode, fills: Fill[], i
           const b64 = dataUrl.split(',')[1];
           const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
           const img = figma.createImage(bytes);
-          figmaFills.push({ type: 'IMAGE', scaleMode: 'FILL', imageHash: img.hash });
-        } catch {
-          // skip
-        }
+          result.push({ type: 'IMAGE', scaleMode: 'FILL', imageHash: img.hash });
+        } catch { /* skip failed image */ }
       }
     }
-    // TODO: gradient support
+    // GRADIENT: skip for now — complex to convert accurately
   }
-  if (figmaFills.length) node.fills = figmaFills;
+  node.fills = result;
 }
 
-function applyStrokes(node: FrameNode | RectangleNode, strokes: Stroke[]) {
+// ─── Strokes ──────────────────────────────────────────────────────────────────
+
+function applyStrokes(node: FrameNode, strokes: Stroke[]) {
   if (!strokes.length) return;
   const s = strokes[0];
   node.strokes = [{ type: 'SOLID', color: { r: s.color.r, g: s.color.g, b: s.color.b }, opacity: s.color.a }];
@@ -71,10 +78,12 @@ function applyStrokes(node: FrameNode | RectangleNode, strokes: Stroke[]) {
   node.strokeAlign = 'INSIDE';
 }
 
-function applyEffects(node: FrameNode | RectangleNode, shadows: Shadow[]) {
+// ─── Effects (shadows) ────────────────────────────────────────────────────────
+
+function applyEffects(node: FrameNode, shadows: Shadow[]) {
   const effects: Effect[] = shadows.map(s => ({
     type: s.type === 'dropShadow' ? 'DROP_SHADOW' : 'INNER_SHADOW',
-    color: figmaColor(s.color),
+    color: { r: s.color.r, g: s.color.g, b: s.color.b, a: s.color.a },
     offset: { x: s.x, y: s.y },
     radius: s.blur,
     spread: s.spread,
@@ -84,122 +93,169 @@ function applyEffects(node: FrameNode | RectangleNode, shadows: Shadow[]) {
   if (effects.length) node.effects = effects;
 }
 
-function applyBorderRadius(node: FrameNode | RectangleNode, br: BorderRadius) {
-  const { tl, tr, br: bottom_r, bl } = br;
-  if (tl === tr && tr === bottom_r && bottom_r === bl) {
+// ─── Border radius ────────────────────────────────────────────────────────────
+
+function applyBorderRadius(node: FrameNode, br: BorderRadius) {
+  const { tl, tr, br: brv, bl } = br;
+  if (tl === tr && tr === brv && brv === bl) {
     node.cornerRadius = tl;
   } else {
     node.topLeftRadius = tl;
     node.topRightRadius = tr;
-    node.bottomRightRadius = bottom_r;
+    node.bottomRightRadius = brv;
     node.bottomLeftRadius = bl;
   }
 }
 
-function applyAutoLayout(node: FrameNode, al: AutoLayout) {
-  node.layoutMode = al.direction;
-  node.itemSpacing = al.gap;
-  node.paddingTop = al.paddingTop;
-  node.paddingRight = al.paddingRight;
-  node.paddingBottom = al.paddingBottom;
-  node.paddingLeft = al.paddingLeft;
-  node.primaryAxisSizingMode = 'AUTO';
-  node.counterAxisSizingMode = 'AUTO';
+// ─── Font loading ─────────────────────────────────────────────────────────────
 
-  // align-items → counterAxisAlignItems
-  const aiMap: Record<string, 'MIN' | 'CENTER' | 'MAX' | 'BASELINE'> = {
-    'flex-start': 'MIN', 'center': 'CENTER', 'flex-end': 'MAX', 'baseline': 'BASELINE',
-  };
-  node.counterAxisAlignItems = aiMap[al.alignItems] || 'MIN';
-
-  // justify-content → primaryAxisAlignItems
-  const jcMap: Record<string, 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN'> = {
-    'flex-start': 'MIN', 'center': 'CENTER', 'flex-end': 'MAX', 'space-between': 'SPACE_BETWEEN',
-  };
-  node.primaryAxisAlignItems = jcMap[al.justifyContent] || 'MIN';
-}
-
-async function loadFontSafe(family: string, weight: string) {
-  const numWeight = parseInt(weight) || 400;
-  const style = numWeight >= 700 ? 'Bold' : numWeight >= 600 ? 'SemiBold' : 'Regular';
-  try {
-    await figma.loadFontAsync({ family, style });
-    return { family, style };
-  } catch {
-    await figma.loadFontAsync({ family: 'Inter', style: 'Regular' });
-    return { family: 'Inter', style: 'Regular' };
+// Map CSS font-weight + font-style to Figma font style names
+function figmaFontStyle(weight: string, italic: boolean): string {
+  const w = parseInt(weight) || 400;
+  if (italic) {
+    if (w >= 700) return 'Bold Italic';
+    if (w >= 600) return 'SemiBold Italic';
+    if (w >= 500) return 'Medium Italic';
+    if (w <= 300) return 'Light Italic';
+    return 'Italic';
   }
+  if (w >= 800) return 'ExtraBold';
+  if (w >= 700) return 'Bold';
+  if (w >= 600) return 'SemiBold';
+  if (w >= 500) return 'Medium';
+  if (w <= 300) return 'Light';
+  if (w <= 200) return 'ExtraLight';
+  if (w <= 100) return 'Thin';
+  return 'Regular';
 }
+
+const fontCache: Record<string, FontName> = {};
+
+async function loadFontSafe(family: string, weight: string, italic: boolean): Promise<FontName> {
+  const key = `${family}-${weight}-${italic}`;
+  if (fontCache[key]) return fontCache[key];
+
+  const style = figmaFontStyle(weight, italic);
+  const fallbacks: FontName[] = [
+    { family, style },
+    { family, style: italic ? 'Italic' : 'Regular' },
+    { family: 'Inter', style: italic ? 'Italic' : 'Regular' },
+    { family: 'Inter', style: 'Regular' },
+  ];
+
+  for (const font of fallbacks) {
+    try {
+      await figma.loadFontAsync(font);
+      fontCache[key] = font;
+      return font;
+    } catch { /* try next */ }
+  }
+
+  // Last resort
+  const last = { family: 'Inter', style: 'Regular' };
+  await figma.loadFontAsync(last);
+  fontCache[key] = last;
+  return last;
+}
+
+// ─── Text helpers ─────────────────────────────────────────────────────────────
 
 function parseLineHeight(lh: string, fontSize: number): LineHeight {
-  if (lh === 'normal') return { unit: 'AUTO' };
+  if (!lh || lh === 'normal') return { unit: 'AUTO' };
   if (lh.endsWith('px')) return { unit: 'PIXELS', value: parseFloat(lh) };
   const num = parseFloat(lh);
-  if (!isNaN(num)) return { unit: 'PIXELS', value: num * fontSize };
+  if (!isNaN(num) && num > 0) return { unit: 'PIXELS', value: num * fontSize };
   return { unit: 'AUTO' };
 }
 
-function parseLetterSpacing(ls: string, fontSize: number): LetterSpacing {
+function parseLetterSpacing(ls: string): LetterSpacing {
   if (!ls || ls === 'normal') return { unit: 'PIXELS', value: 0 };
   if (ls.endsWith('em')) return { unit: 'PERCENT', value: parseFloat(ls) * 100 };
-  return { unit: 'PIXELS', value: parseFloat(ls) || 0 };
+  if (ls.endsWith('px')) return { unit: 'PIXELS', value: parseFloat(ls) };
+  return { unit: 'PIXELS', value: 0 };
 }
 
-async function buildText(layer: Layer, images: Record<string, string>): Promise<TextNode> {
+function applyTextTransform(content: string, transform: string): string {
+  if (transform === 'uppercase') return content.toUpperCase();
+  if (transform === 'lowercase') return content.toLowerCase();
+  if (transform === 'capitalize') return content.replace(/\b\w/g, c => c.toUpperCase());
+  return content;
+}
+
+// ─── Build TEXT node ──────────────────────────────────────────────────────────
+
+async function buildText(layer: Layer): Promise<TextNode | null> {
   const t = layer.text!;
-  const font = await loadFontSafe(t.fontFamily, t.fontWeight);
+  if (!t.content) return null;
+
+  const isItalic = t.fontStyle === 'italic' || t.fontStyle === 'oblique';
+  const font = await loadFontSafe(t.fontFamily, t.fontWeight, isItalic);
+
   const node = figma.createText();
   node.fontName = font;
-  node.fontSize = t.fontSize || 14;
-  node.characters = t.content;
+  node.fontSize = Math.max(t.fontSize || 14, 1);
+
+  const content = applyTextTransform(t.content, t.textTransform);
+  node.characters = content;
+
   node.lineHeight = parseLineHeight(t.lineHeight, t.fontSize);
-  node.letterSpacing = parseLetterSpacing(t.letterSpacing, t.fontSize);
+  node.letterSpacing = parseLetterSpacing(t.letterSpacing);
 
   const alignMap: Record<string, 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'> = {
-    left: 'LEFT', center: 'CENTER', right: 'RIGHT', justify: 'JUSTIFIED',
+    left: 'LEFT', start: 'LEFT',
+    center: 'CENTER',
+    right: 'RIGHT', end: 'RIGHT',
+    justify: 'JUSTIFIED',
   };
   node.textAlignHorizontal = alignMap[t.textAlign] || 'LEFT';
 
   if (t.color) {
-    node.fills = [{ type: 'SOLID', color: { r: t.color.r, g: t.color.g, b: t.color.b }, opacity: t.color.a }];
+    node.fills = [{
+      type: 'SOLID',
+      color: { r: t.color.r, g: t.color.g, b: t.color.b },
+      opacity: t.color.a,
+    }];
   }
 
   if (t.textDecoration?.includes('underline')) node.textDecoration = 'UNDERLINE';
-  if (t.textDecoration?.includes('line-through')) node.textDecoration = 'STRIKETHROUGH';
+  else if (t.textDecoration?.includes('line-through')) node.textDecoration = 'STRIKETHROUGH';
 
-  node.resize(layer.width, layer.height);
+  // Fix dimensions to match browser-rendered size
+  node.textAutoResize = 'NONE';
+  node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
   node.x = layer.x;
   node.y = layer.y;
   node.opacity = layer.opacity;
   return node;
 }
 
+// ─── Build SVG node ───────────────────────────────────────────────────────────
+
 async function buildSvg(layer: Layer): Promise<FrameNode | null> {
   if (!layer.svgContent) return null;
   try {
     const node = figma.createNodeFromSvg(layer.svgContent);
-    node.resize(layer.width, layer.height);
+    node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
     node.x = layer.x;
     node.y = layer.y;
     node.opacity = layer.opacity;
     return node as unknown as FrameNode;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-async function buildLayer(layer: Layer, images: Record<string, string>): Promise<SceneNode | null> {
-  if (layer.type === 'TEXT') {
-    return buildText(layer, images);
-  }
+// ─── Build FRAME node ─────────────────────────────────────────────────────────
 
-  if (layer.type === 'SVG') {
-    return buildSvg(layer);
-  }
-
-  // FRAME or IMAGE
+async function buildFrame(layer: Layer, images: Record<string, string>): Promise<FrameNode> {
   const node = figma.createFrame();
-  node.name = layer.tagName.toLowerCase();
+
+  // Use semantic name: id, first class, or tag name
+  node.name = layer.name || layer.tagName.toLowerCase();
+
+  // IMPORTANT: Always use absolute positioning — never Auto Layout.
+  // Auto Layout ignores x/y coordinates and rearranges children,
+  // which breaks pixel-perfect positioning.
+  node.layoutMode = 'NONE';
+
   node.x = layer.x;
   node.y = layer.y;
   node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
@@ -212,25 +268,35 @@ async function buildLayer(layer: Layer, images: Record<string, string>): Promise
   applyEffects(node, layer.effects);
   applyBorderRadius(node, layer.borderRadius);
 
-  if (layer.autoLayout) {
-    applyAutoLayout(node, layer.autoLayout);
-  } else {
-    node.layoutMode = 'NONE';
-  }
-
+  // Build children recursively
   for (const child of layer.children) {
     const childNode = await buildLayer(child, images);
-    if (childNode) node.appendChild(childNode);
+    if (childNode) {
+      node.appendChild(childNode);
+      // Re-apply position after append to ensure correct coordinates
+      childNode.x = child.x;
+      childNode.y = child.y;
+    }
   }
 
   return node;
 }
 
+// ─── Main dispatch ────────────────────────────────────────────────────────────
+
+async function buildLayer(layer: Layer, images: Record<string, string>): Promise<SceneNode | null> {
+  if (layer.type === 'TEXT' || layer.type === 'INPUT') {
+    return buildText(layer);
+  }
+  if (layer.type === 'SVG') {
+    return buildSvg(layer);
+  }
+  return buildFrame(layer, images);
+}
+
 async function buildFromLayers(rootLayer: Layer, images: Record<string, string>) {
-  const page = figma.currentPage;
-  const frame = await buildLayer(rootLayer, images) as FrameNode;
-  if (!frame) return;
+  const frame = await buildFrame(rootLayer, images);
   frame.name = 'Imported from HTML';
-  page.appendChild(frame);
+  figma.currentPage.appendChild(frame);
   figma.viewport.scrollAndZoomIntoView([frame]);
 }

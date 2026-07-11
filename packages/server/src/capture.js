@@ -4,8 +4,9 @@
  * with resolved computed styles and bounding boxes.
  */
 export async function captureScript() {
-  // This function runs INSIDE the browser via page.evaluate()
-  const IGNORE_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'META', 'LINK', 'HEAD', 'TEMPLATE']);
+  const IGNORE_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'META', 'LINK', 'HEAD', 'TEMPLATE', 'IFRAME']);
+
+  // ─── Color helpers ───────────────────────────────────────────────────────────
 
   function rgba(r, g, b, a = 1) {
     return { r: r / 255, g: g / 255, b: b / 255, a };
@@ -13,20 +14,23 @@ export async function captureScript() {
 
   function parseColor(str) {
     if (!str || str === 'transparent' || str === 'rgba(0, 0, 0, 0)') return null;
-    const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+    const m = str.match(/rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)/);
     if (!m) return null;
-    return rgba(+m[1], +m[2], +m[3], m[4] !== undefined ? +m[4] : 1);
+    const a = m[4] !== undefined ? +m[4] : 1;
+    if (a === 0) return null;
+    return rgba(+m[1], +m[2], +m[3], a);
   }
 
   function parsePx(val) {
     return parseFloat(val) || 0;
   }
 
+  // ─── Box shadow ──────────────────────────────────────────────────────────────
+
   function parseBoxShadow(str) {
     if (!str || str === 'none') return [];
-    // Basic: "x y blur spread color inset"
     const shadows = [];
-    const regex = /(-?\d+(?:\.\d+)?px)\s+(-?\d+(?:\.\d+)?px)\s+(-?\d+(?:\.\d+)?px)(?:\s+(-?\d+(?:\.\d+)?px))?\s+(rgba?\([^)]+\)|#\w+|\w+)(\s+inset)?/g;
+    const regex = /(-?\d+(?:\.\d+)?px)\s+(-?\d+(?:\.\d+)?px)\s+(-?\d+(?:\.\d+)?px)(?:\s+(-?\d+(?:\.\d+)?px))?\s+(rgba?\([^)]+\))(\s+inset)?/g;
     let m;
     while ((m = regex.exec(str)) !== null) {
       const color = parseColor(m[5]);
@@ -44,12 +48,7 @@ export async function captureScript() {
     return shadows;
   }
 
-  function parseGradient(str) {
-    // Very simplified - just detect type
-    if (str.startsWith('linear-gradient')) return { type: 'linear', raw: str };
-    if (str.startsWith('radial-gradient')) return { type: 'radial', raw: str };
-    return null;
-  }
+  // ─── Border radius ───────────────────────────────────────────────────────────
 
   function parseBorderRadius(cs) {
     return {
@@ -60,30 +59,31 @@ export async function captureScript() {
     };
   }
 
-  function getImageSrc(el) {
-    if (el.tagName === 'IMG') return el.currentSrc || el.src || null;
-    return null;
-  }
+  // ─── Fills ───────────────────────────────────────────────────────────────────
 
   function getBackgroundImageUrl(cs) {
     const bg = cs.backgroundImage;
     if (!bg || bg === 'none') return null;
+    if (bg.includes('gradient')) return null;
     const m = bg.match(/url\(["']?([^"')]+)["']?\)/);
     return m ? m[1] : null;
+  }
+
+  function parseLinearGradient(str) {
+    // Extract angle and stops from linear-gradient(...)
+    // Simplified: capture raw for now
+    return { type: 'LINEAR', raw: str };
   }
 
   function extractFills(el, cs) {
     const fills = [];
     const bgColor = parseColor(cs.backgroundColor);
-    if (bgColor && bgColor.a > 0) {
-      fills.push({ type: 'SOLID', color: bgColor });
-    }
+    if (bgColor) fills.push({ type: 'SOLID', color: bgColor });
 
     const bgImage = cs.backgroundImage;
     if (bgImage && bgImage !== 'none') {
       if (bgImage.includes('gradient')) {
-        const g = parseGradient(bgImage);
-        if (g) fills.push({ type: 'GRADIENT', gradient: g });
+        fills.push({ type: 'GRADIENT', gradient: parseLinearGradient(bgImage) });
       } else {
         const url = getBackgroundImageUrl(cs);
         if (url) fills.push({ type: 'IMAGE', url });
@@ -91,12 +91,14 @@ export async function captureScript() {
     }
 
     if (el.tagName === 'IMG') {
-      const src = getImageSrc(el);
+      const src = el.currentSrc || el.src || el.getAttribute('src');
       if (src) fills.push({ type: 'IMAGE', url: src });
     }
 
     return fills;
   }
+
+  // ─── Strokes ─────────────────────────────────────────────────────────────────
 
   function extractStrokes(cs) {
     const strokes = [];
@@ -106,91 +108,103 @@ export async function captureScript() {
       const color = parseColor(cs[`border${side}Color`]);
       if (w > 0 && color) {
         strokes.push({ side: side.toLowerCase(), width: w, color });
-        break; // Figma doesn't support per-side strokes well; use first non-zero
+        break;
       }
     }
     return strokes;
   }
 
-  function isSvg(el) {
+  // ─── Node type detection ─────────────────────────────────────────────────────
+
+  function isSvgEl(el) {
     return el instanceof SVGElement;
   }
 
-  function nodeType(el, cs) {
-    if (isSvg(el)) return 'SVG';
+  /**
+   * Determine the Figma node type for an element.
+   * Key rule: any leaf element (no child elements) with non-empty text → TEXT.
+   * This catches div, span, p, h1-h6, button, td, li, etc.
+   */
+  function nodeType(el) {
+    if (isSvgEl(el)) return 'SVG';
     if (el.tagName === 'IMG') return 'IMAGE';
-    const tag = el.tagName;
-    if (['P', 'SPAN', 'A', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LABEL', 'BUTTON', 'LI'].includes(tag)) {
-      if (el.childElementCount === 0 && el.textContent.trim()) return 'TEXT';
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return 'INPUT';
+    // Leaf element with visible text → TEXT node in Figma
+    if (el.childElementCount === 0) {
+      const text = el.textContent.trim();
+      if (text) return 'TEXT';
     }
     return 'FRAME';
   }
 
+  // ─── Text info ───────────────────────────────────────────────────────────────
+
   function extractText(el, cs) {
+    // For input elements, get the value or placeholder
+    let content = el.tagName === 'INPUT'
+      ? (el.value || el.placeholder || '')
+      : el.textContent.trim();
+
     return {
-      content: el.textContent.trim(),
+      content,
       fontSize: parsePx(cs.fontSize),
       fontFamily: cs.fontFamily.split(',')[0].replace(/['"]/g, '').trim(),
       fontWeight: cs.fontWeight,
+      fontStyle: cs.fontStyle,          // 'italic' | 'normal'
       lineHeight: cs.lineHeight,
       letterSpacing: cs.letterSpacing,
       textAlign: cs.textAlign,
       color: parseColor(cs.color),
       textDecoration: cs.textDecoration,
+      textTransform: cs.textTransform,
     };
   }
 
-  function extractAutoLayout(cs) {
-    if (cs.display !== 'flex') return null;
-    return {
-      direction: cs.flexDirection.startsWith('row') ? 'HORIZONTAL' : 'VERTICAL',
-      gap: parsePx(cs.gap || cs.rowGap || '0'),
-      paddingTop: parsePx(cs.paddingTop),
-      paddingRight: parsePx(cs.paddingRight),
-      paddingBottom: parsePx(cs.paddingBottom),
-      paddingLeft: parsePx(cs.paddingLeft),
-      alignItems: cs.alignItems,
-      justifyContent: cs.justifyContent,
-      wrap: cs.flexWrap !== 'nowrap',
-    };
-  }
+  // ─── Walk DOM ────────────────────────────────────────────────────────────────
 
   function walkNode(el, parentRect) {
     if (IGNORE_TAGS.has(el.tagName)) return null;
 
     const rect = el.getBoundingClientRect();
+    // Skip truly invisible elements (both dimensions zero)
     if (rect.width === 0 && rect.height === 0) return null;
 
     const cs = window.getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return null;
+    if (cs.display === 'none') return null;
+    if (cs.visibility === 'hidden' && el.childElementCount === 0) return null;
 
-    const type = nodeType(el, cs);
+    const type = nodeType(el);
+
     const layer = {
       type,
       tagName: el.tagName,
-      x: rect.left - (parentRect ? parentRect.left : 0),
-      y: rect.top - (parentRect ? parentRect.top : 0),
-      width: rect.width,
-      height: rect.height,
-      opacity: parseFloat(cs.opacity) || 1,
+      name: el.id ? `#${el.id}` : (el.className && typeof el.className === 'string' ? el.className.split(' ')[0] : el.tagName.toLowerCase()),
+      // Position relative to parent's top-left corner
+      x: Math.round(rect.left - (parentRect ? parentRect.left : 0)),
+      y: Math.round(rect.top - (parentRect ? parentRect.top : 0)),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      opacity: parseFloat(cs.opacity) ?? 1,
       overflow: cs.overflow === 'hidden' || cs.overflowX === 'hidden' || cs.overflowY === 'hidden',
       borderRadius: parseBorderRadius(cs),
       fills: extractFills(el, cs),
       strokes: extractStrokes(cs),
       effects: parseBoxShadow(cs.boxShadow),
-      autoLayout: extractAutoLayout(cs),
       children: [],
     };
 
-    if (type === 'TEXT') {
+    if (type === 'TEXT' || type === 'INPUT') {
       layer.text = extractText(el, cs);
     }
 
     if (type === 'SVG') {
-      layer.svgContent = new XMLSerializer().serializeToString(el);
+      try {
+        layer.svgContent = new XMLSerializer().serializeToString(el);
+      } catch {}
     }
 
-    if (type === 'FRAME' || type === 'IMAGE') {
+    // Recurse into children for container elements
+    if (type === 'FRAME') {
       for (const child of el.children) {
         const childLayer = walkNode(child, rect);
         if (childLayer) layer.children.push(childLayer);
@@ -200,23 +214,31 @@ export async function captureScript() {
     return layer;
   }
 
-  // Start from body
+  // ─── Build root ──────────────────────────────────────────────────────────────
+
+  // Scroll to top before capturing to get consistent positions
+  window.scrollTo(0, 0);
+
   const body = document.body;
   const bodyRect = body.getBoundingClientRect();
+  const bgColor = parseColor(getComputedStyle(body).backgroundColor)
+    || parseColor(getComputedStyle(document.documentElement).backgroundColor)
+    || { r: 1, g: 1, b: 1, a: 1 };
+
   const root = {
     type: 'FRAME',
     tagName: 'BODY',
+    name: 'Page',
     x: 0,
     y: 0,
-    width: document.documentElement.scrollWidth,
-    height: document.documentElement.scrollHeight,
-    fills: [{ type: 'SOLID', color: parseColor(getComputedStyle(body).backgroundColor) || { r: 1, g: 1, b: 1, a: 1 } }],
+    width: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+    height: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
+    fills: [{ type: 'SOLID', color: bgColor }],
     strokes: [],
     effects: [],
     borderRadius: { tl: 0, tr: 0, br: 0, bl: 0 },
     opacity: 1,
     overflow: false,
-    autoLayout: null,
     children: [],
   };
 
