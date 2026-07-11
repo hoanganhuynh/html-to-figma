@@ -317,7 +317,7 @@ export async function captureScript() {
         const childCs = window.getComputedStyle(child);
         if (childCs.color !== baseColorStr) {
           const childColor = parseColor(childCs.color);
-          const childText = ((child.innerText !== undefined ? child.innerText : child.textContent) || '').trim();
+          const childText = getTextContent(child).trim();
           if (childText && childColor) {
             inlineColors.push({ text: childText, color: childColor });
           }

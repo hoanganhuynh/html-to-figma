@@ -335,6 +335,17 @@ async function buildText(layer: Layer, images: Record<string, string>, parentIsA
       color: { r: t.color.r, g: t.color.g, b: t.color.b },
       opacity: t.color.a,
     }];
+  } else {
+    // Transparent text color usually means CSS `background-clip: text` + gradient.
+    // Apply any gradient fills from the element's background directly onto the text node.
+    const gradFills: Paint[] = [];
+    for (const f of layer.fills) {
+      if (f.type === 'GRADIENT' && f.gradient) {
+        const paint = buildGradientPaint(f.gradient);
+        if (paint) gradFills.push(paint);
+      }
+    }
+    if (gradFills.length > 0) node.fills = gradFills;
   }
 
   // Per-character color overrides (e.g. <h1>white text <span class="gold">Profit.</span></h1>)
@@ -393,11 +404,22 @@ async function buildText(layer: Layer, images: Record<string, string>, parentIsA
     return frame;
   }
 
-  // Lock width to browser-captured value; let height auto-adjust.
-  // HEIGHT mode: text wraps within the correct column width, never clips,
-  // and accommodates minor font-metric differences between Chrome and Figma.
-  node.textAutoResize = 'HEIGHT';
-  node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
+  // For single-line text, use WIDTH_AND_HEIGHT so Figma auto-sizes to fit the
+  // content and avoids word-wrap caused by minor browser↔Figma font metric gaps.
+  // For multi-line text (paragraph wrapped at a specific column width), fix the
+  // width and let height grow (HEIGHT mode).
+  let lineHeightPx = t.fontSize * 1.4;
+  if (t.lineHeight && t.lineHeight !== 'normal' && t.lineHeight.endsWith('px')) {
+    lineHeightPx = parseFloat(t.lineHeight);
+  }
+  const isSingleLine = !content.includes('\n') && layer.height < lineHeightPx * 2.0;
+
+  if (isSingleLine) {
+    node.textAutoResize = 'WIDTH_AND_HEIGHT';
+  } else {
+    node.textAutoResize = 'HEIGHT';
+    node.resize(Math.max(layer.width, 1), Math.max(layer.height, 1));
+  }
 
   node.x = layer.x;
   node.y = layer.y;
