@@ -1,0 +1,12 @@
+{
+  "name": "HTML to Figma",
+  "id": "html-to-figma-local",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui/index.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["http://localhost:3333"],
+    "reasoning": "Connects to local Playwright capture server"
+  }
+}

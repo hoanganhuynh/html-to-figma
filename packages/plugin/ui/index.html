@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>HTML to Figma</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', sans-serif; font-size: 13px; color: #1e1e1e; background: #fff; }
+
+  .header {
+    padding: 16px;
+    border-bottom: 1px solid #e5e5e5;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .header h1 { font-size: 14px; font-weight: 600; }
+  .badge {
+    font-size: 10px;
+    background: #18a0fb;
+    color: white;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+
+  .status-bar {
+    padding: 6px 16px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
+  .dot.online { background: #14ae5c; }
+  .dot.offline { background: #f24822; }
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid #e5e5e5;
+    padding: 0 16px;
+  }
+  .tab {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    color: #888;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .tab.active { color: #18a0fb; border-bottom-color: #18a0fb; }
+
+  .panel { padding: 16px; display: none; }
+  .panel.active { display: block; }
+
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 11px; font-weight: 500; color: #555; margin-bottom: 5px; }
+  .field input, .field textarea, .field select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .field input:focus, .field textarea:focus { border-color: #18a0fb; }
+  .field textarea { resize: vertical; min-height: 140px; font-family: 'Menlo', monospace; font-size: 11px; }
+
+  .row { display: flex; gap: 8px; }
+  .row .field { flex: 1; }
+
+  .btn {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, opacity .15s;
+  }
+  .btn-primary { background: #18a0fb; color: white; }
+  .btn-primary:hover { background: #0e8ce8; }
+  .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+
+  .progress {
+    display: none;
+    margin-top: 14px;
+    background: #f5f5f5;
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .progress.active { display: block; }
+  .progress-label { font-size: 12px; color: #555; margin-bottom: 8px; }
+  .progress-bar-wrap { background: #e0e0e0; border-radius: 4px; height: 4px; overflow: hidden; }
+  .progress-bar { height: 100%; background: #18a0fb; border-radius: 4px; transition: width .3s; width: 0%; }
+
+  .log {
+    margin-top: 10px;
+    font-size: 11px;
+    color: #666;
+    max-height: 100px;
+    overflow-y: auto;
+    font-family: monospace;
+  }
+  .log-line { padding: 1px 0; }
+  .log-line.error { color: #f24822; }
+
+  .tip {
+    font-size: 11px;
+    color: #888;
+    background: #f8f8f8;
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 10px;
+    line-height: 1.5;
+  }
+  .tip code {
+    background: #efefef;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 10px;
+  }
+
+  .viewport-options { display: flex; gap: 6px; margin-top: 5px; }
+  .vp-btn {
+    flex: 1;
+    padding: 6px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    background: white;
+    cursor: pointer;
+    font-size: 11px;
+    color: #555;
+    text-align: center;
+    transition: all .15s;
+  }
+  .vp-btn.active { border-color: #18a0fb; color: #18a0fb; background: #e8f4ff; }
+
+  .file-drop {
+    border: 2px dashed #ddd;
+    border-radius: 8px;
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .15s;
+    color: #888;
+    font-size: 12px;
+  }
+  .file-drop:hover, .file-drop.drag { border-color: #18a0fb; background: #f0f8ff; color: #18a0fb; }
+  .file-drop .icon { font-size: 24px; margin-bottom: 8px; }
+  .file-drop input { display: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>HTML to Figma</h1>
+  <span class="badge">LOCAL</span>
+</div>
+
+<div class="status-bar">
+  <div class="dot" id="dot"></div>
+  <span id="server-status">Checking server...</span>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="url">URL</div>
+  <div class="tab" data-tab="file">HTML File</div>
+  <div class="tab" data-tab="code">HTML Code</div>
+</div>
+
+<!-- URL Tab -->
+<div class="panel active" id="tab-url">
+  <div class="field">
+    <label>Website URL</label>
+    <input type="url" id="url-input" placeholder="https://example.com" />
+  </div>
+
+  <div class="field">
+    <label>Viewport</label>
+    <div class="viewport-options">
+      <button class="vp-btn active" data-vp="1440,900">Desktop 1440</button>
+      <button class="vp-btn" data-vp="768,1024">Tablet 768</button>
+      <button class="vp-btn" data-vp="390,844">Mobile 390</button>
+    </div>
+  </div>
+
+  <button class="btn btn-primary" id="btn-url">Import URL</button>
+
+  <div class="tip">
+    Server phải đang chạy: <code>cd packages/server && npm start</code>
+  </div>
+</div>
+
+<!-- File Tab -->
+<div class="panel" id="tab-file">
+  <div class="file-drop" id="file-drop">
+    <div class="icon">📄</div>
+    <div>Kéo thả file <strong>.html</strong> vào đây</div>
+    <div style="margin-top:4px;font-size:11px;color:#aaa">hoặc click để chọn file</div>
+    <input type="file" id="file-input" accept=".html,.htm" />
+  </div>
+  <div id="file-name" style="margin-top:8px;font-size:12px;color:#555;text-align:center;"></div>
+  <button class="btn btn-primary" id="btn-file" style="margin-top:12px" disabled>Import File</button>
+</div>
+
+<!-- Code Tab -->
+<div class="panel" id="tab-code">
+  <div class="field">
+    <label>Paste HTML code</label>
+    <textarea id="html-input" placeholder="<html>...</html>"></textarea>
+  </div>
+  <button class="btn btn-primary" id="btn-code">Import HTML</button>
+</div>
+
+<!-- Progress (shared) -->
+<div class="progress" id="progress">
+  <div class="progress-label" id="progress-label">Connecting to server...</div>
+  <div class="progress-bar-wrap">
+    <div class="progress-bar" id="progress-bar"></div>
+  </div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+const SERVER = 'http://localhost:3333';
+let selectedViewport = { width: 1440, height: 900 };
+let selectedFileContent = null;
+
+// ─── Server status ────────────────────────────────────────────────────────────
+async function checkServer() {
+  try {
+    const r = await fetch(`${SERVER}/health`);
+    if (r.ok) {
+      document.getElementById('dot').className = 'dot online';
+      document.getElementById('server-status').textContent = 'Server connected (localhost:3333)';
+      return true;
+    }
+  } catch {}
+  document.getElementById('dot').className = 'dot offline';
+  document.getElementById('server-status').textContent = 'Server offline — run: npm start';
+  return false;
+}
+checkServer();
+setInterval(checkServer, 5000);
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// ─── Viewport ─────────────────────────────────────────────────────────────────
+document.querySelectorAll('.vp-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.vp-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const [w, h] = btn.dataset.vp.split(',').map(Number);
+    selectedViewport = { width: w, height: h };
+  });
+});
+
+// ─── File drop ────────────────────────────────────────────────────────────────
+const fileDrop = document.getElementById('file-drop');
+const fileInput = document.getElementById('file-input');
+
+fileDrop.addEventListener('click', () => fileInput.click());
+fileDrop.addEventListener('dragover', e => { e.preventDefault(); fileDrop.classList.add('drag'); });
+fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('drag'));
+fileDrop.addEventListener('drop', e => {
+  e.preventDefault();
+  fileDrop.classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) handleFile(fileInput.files[0]);
+});
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    selectedFileContent = e.target.result;
+    document.getElementById('file-name').textContent = '📄 ' + file.name;
+    document.getElementById('btn-file').disabled = false;
+  };
+  reader.readAsText(file);
+}
+
+// ─── Progress helpers ─────────────────────────────────────────────────────────
+function showProgress(label, pct) {
+  document.getElementById('progress').classList.add('active');
+  document.getElementById('progress-label').textContent = label;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+function addLog(msg, isError = false) {
+  const log = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = 'log-line' + (isError ? ' error' : '');
+  line.textContent = msg;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function hideProgress() {
+  setTimeout(() => {
+    document.getElementById('progress').classList.remove('active');
+    document.getElementById('log').innerHTML = '';
+  }, 2000);
+}
+
+function setButtonsDisabled(disabled) {
+  ['btn-url', 'btn-file', 'btn-code'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
+// ─── Capture + build ──────────────────────────────────────────────────────────
+async function runCapture(payload) {
+  setButtonsDisabled(true);
+  document.getElementById('log').innerHTML = '';
+
+  showProgress('Connecting to local server...', 10);
+  addLog('POST /capture ...');
+
+  try {
+    const response = await fetch(`${SERVER}/capture`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...payload, viewport: selectedViewport }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error || 'Server error');
+    }
+
+    showProgress('Processing response...', 50);
+    addLog('Received layer tree');
+
+    const { layers, images } = await response.json();
+    const imageCount = Object.keys(images).length;
+    addLog(`Layers captured. Images: ${imageCount}`);
+
+    showProgress('Building Figma layers...', 75);
+    addLog('Sending to Figma plugin...');
+
+    parent.postMessage({ pluginMessage: { type: 'build', layers, images } }, '*');
+  } catch (err) {
+    addLog('Error: ' + err.message, true);
+    showProgress('Error — see log below', 0);
+    setButtonsDisabled(false);
+  }
+}
+
+// Handlers
+document.getElementById('btn-url').addEventListener('click', () => {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) return alert('Please enter a URL');
+  runCapture({ url });
+});
+
+document.getElementById('btn-file').addEventListener('click', () => {
+  if (!selectedFileContent) return;
+  runCapture({ html: selectedFileContent });
+});
+
+document.getElementById('btn-code').addEventListener('click', () => {
+  const html = document.getElementById('html-input').value.trim();
+  if (!html) return alert('Please enter HTML code');
+  runCapture({ html });
+});
+
+// Listen for done message from plugin
+window.addEventListener('message', e => {
+  if (e.data.pluginMessage?.type === 'done') {
+    showProgress('Done! ✅', 100);
+    addLog('Layers created on canvas');
+    hideProgress();
+    setButtonsDisabled(false);
+  }
+});
+</script>
+</body>
+</html>

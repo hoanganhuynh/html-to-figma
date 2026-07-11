@@ -1,0 +1,10 @@
+{
+  "name": "html-to-figma",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "server": "npm run dev --workspace=packages/server",
+    "plugin": "npm run dev --workspace=packages/plugin",
+    "build": "npm run build --workspaces"
+  }
+}
